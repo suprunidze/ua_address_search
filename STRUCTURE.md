@@ -26,7 +26,7 @@
   вихідної та встановлених копій; `live_check.py`: максимум 1–3 запити Visicom.
 - `tests/unit/`, `tests/server/`, `tests/qgis/`, `tests/release/`: моделі, сервер і QGIS.
   `tests/fixtures/address.json`: синтетична відповідь, не вивантаження Visicom.
-- `research/architecture.md`: прийнятий план. `research/visicom_api.md`: контракт API; `research/validation.md`: перевірки випуску.
+- `research/architecture.md`: прийнятий план. `research/visicom_api.md`: контракт API; `research/validation.md`: перевірки випуску; `research/deployment.md`: Railway deployment.
 - `dist/`: версіоновані ZIP та plugins.xml; `artifacts/`: ігноровані локальні звіти.
 - `requirements-dev.txt`, `pyproject.toml`: залежності розробки та Ruff.
 - `.github/workflows/checks.yml`: CI для lint, unit/API та пакування без живого API.
