@@ -40,29 +40,49 @@ def main():
                 PYTHONDONTWRITEBYTECODE="1",
                 PYTHONIOENCODING="utf-8",
             )
+            destination = ROOT / "artifacts"
+            destination.mkdir(exist_ok=True)
+            log_path = destination / ("qgis-run-" + str(len(rows)) + ".log")
             try:
-                result = subprocess.run(
-                    [
-                        str(launchers[0]),
-                        "-B",
-                        str(ROOT / "scripts/qgis_smoke.py"),
-                        "--plugin-parent",
-                        str(parent),
-                    ],
-                    cwd=ROOT,
-                    env=env,
-                    capture_output=True,
-                    text=True,
-                    encoding="utf-8",
-                    errors="replace",
-                    timeout=100,
-                )
-                output = result.stdout + result.stderr
-                passed = result.returncode == 0 and "UAAS_SMOKE_OK" in output
+                command = [
+                    str(launchers[0]),
+                    "-B",
+                    str(ROOT / "scripts/qgis_smoke.py"),
+                    "--plugin-parent",
+                    str(parent),
+                ]
+                with log_path.open("w", encoding="utf-8") as log:
+                    process = subprocess.Popen(
+                        command,
+                        cwd=ROOT,
+                        env=env,
+                        stdout=log,
+                        stderr=subprocess.STDOUT,
+                    )
+                    try:
+                        returncode = process.wait(timeout=100)
+                    except subprocess.TimeoutExpired:
+                        # A .bat launcher has a Python child; killing the launcher alone
+                        # leaves its child alive and can hang communicate() on Windows.
+                        if os.name == "nt":
+                            subprocess.run(
+                                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                                capture_output=True,
+                                check=False,
+                            )
+                        if process.poll() is None:
+                            process.kill()
+                        process.wait(timeout=5)
+                        raise
+                output = log_path.read_text(encoding="utf-8", errors="replace")
+                passed = returncode == 0 and "UAAS_SMOKE_OK" in output
             except subprocess.TimeoutExpired:
-                output, passed = "QGIS smoke timed out", False
+                output = "QGIS smoke timed out\n" + log_path.read_text(
+                    encoding="utf-8", errors="replace"
+                )
+                passed = False
             kind = "source" if parent == ROOT else str(parent.parent.parent.name)
-            print(f"{directory.name} [{kind}]: {'PASS' if passed else 'FAIL'}")
+            print(f"{directory.name} [{kind}]: {'PASS' if passed else 'FAIL'}", flush=True)
             if not passed:
                 print(output[-8000:])
             rows.append(

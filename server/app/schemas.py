@@ -1,6 +1,12 @@
 """Public proxy input contract."""
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from uuid import UUID
+
+
+class RegistrationInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    installation_id: UUID
 
 
 class SearchInput(BaseModel):

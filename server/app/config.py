@@ -15,6 +15,9 @@ class Config:
     token_minute: int = 10
     timeout: float = 12.0
     token_daily_overrides: dict = field(default_factory=dict, repr=False)
+    registration_enabled: bool = True
+    registration_minute: int = 10
+    registration_daily: int = 100
 
     @classmethod
     def from_env(cls):
@@ -28,9 +31,15 @@ class Config:
             token_daily_overrides=json.loads(
                 os.environ.get("UAAS_TOKEN_DAILY_LIMIT_OVERRIDES", "{}")
             ),
+            registration_enabled=os.environ.get("UAAS_REGISTRATION_ENABLED", "true").lower()
+            in ("true", "1", "yes"),
+            registration_minute=int(os.environ.get("UAAS_REGISTRATION_MINUTE_LIMIT", "10")),
+            registration_daily=int(os.environ.get("UAAS_REGISTRATION_DAILY_LIMIT", "100")),
         )
         if min(config.global_daily, config.token_daily, config.token_minute, config.timeout) <= 0:
             raise ValueError("Server limits must be positive")
+        if min(config.registration_minute, config.registration_daily) <= 0:
+            raise ValueError("Registration limits must be positive")
         overrides = config.token_daily_overrides
         if not isinstance(overrides, dict) or any(
             not isinstance(key, str)

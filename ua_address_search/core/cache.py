@@ -42,6 +42,8 @@ class SessionCache:
         self.identity = None
         self.closed = False
         self.stats = {"network": 0, "cache": 0, "shared": 0}
+        self.quota = None
+        self.on_quota = None
 
     def set_identity(self, identity):
         with self.lock:
@@ -54,6 +56,7 @@ class SessionCache:
         self.epoch += 1
         self.entries.clear()
         self.size = 0
+        self.quota = None
         for flight in self.flights.values():
             flight.feedback.cancel()
         self.flights.clear()
@@ -62,6 +65,17 @@ class SessionCache:
         with self.lock:
             self.closed = True
             self._clear()
+
+    def update_quota(self, identity, quota):
+        with self.lock:
+            if self.closed or self.identity != identity or not isinstance(quota, dict):
+                return
+            if self.quota is None or quota.get("observed_at", 0) >= self.quota.get(
+                "observed_at", 0
+            ):
+                self.quota = dict(quota)
+                if self.on_quota is not None:
+                    self.on_quota()
 
     @staticmethod
     def key(identity, operation, value):

@@ -14,7 +14,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.concurrency import run_in_threadpool
 from .config import Config
 from .journal import configure
-from .schemas import ReverseInput, SearchInput
+from .schemas import RegistrationInput, ReverseInput, SearchInput
 from .storage import AccessError, Store
 from .visicom import ProviderError, Visicom
 
@@ -54,6 +54,7 @@ def create_app(config: Optional[Config] = None, provider=None):
         digest = await run_in_threadpool(store.authenticate, credentials.credentials)
         label = await run_in_threadpool(store.token_label, digest)
         request.state.token_label = label
+        request.state.digest = digest
         session_id = request.state.session_id
         identity = (digest, session_id)
         if session_id and identity not in sessions:
@@ -116,6 +117,7 @@ def create_app(config: Optional[Config] = None, provider=None):
                 "/v1/search": "search",
                 "/v1/reverse": "reverse",
                 "/v1/quota": "quota",
+                "/v1/register": "register",
             }
             if path.startswith("/v1/features/"):
                 route, operation = "/v1/features/{id}", "feature"
@@ -141,6 +143,13 @@ def create_app(config: Optional[Config] = None, provider=None):
                 },
             )
 
+    async def error_payload(request, code):
+        payload = {"error": {"code": code}}
+        digest = getattr(request.state, "digest", None)
+        if digest:
+            payload["quota"] = await run_in_threadpool(store.quota, digest)
+        return payload
+
     @app.exception_handler(AccessError)
     async def access_error(request, exc):
         request.state.error_code = exc.code
@@ -149,7 +158,9 @@ def create_app(config: Optional[Config] = None, provider=None):
             if exc.status == 429
             else {"WWW-Authenticate": "Bearer"}
         )
-        return JSONResponse({"error": {"code": exc.code}}, status_code=exc.status, headers=headers)
+        return JSONResponse(
+            await error_payload(request, exc.code), status_code=exc.status, headers=headers
+        )
 
     @app.exception_handler(ProviderError)
     async def provider_error(request, exc):
@@ -159,19 +170,52 @@ def create_app(config: Optional[Config] = None, provider=None):
             "provider_failure",
             extra={"fields": {"code": exc.code, "request_id": request.state.request_id}},
         )
-        return JSONResponse({"error": {"code": exc.code}}, status_code=exc.status, headers=headers)
+        return JSONResponse(
+            await error_payload(request, exc.code), status_code=exc.status, headers=headers
+        )
 
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request, exc):
         request.state.error_code = "invalid_request"
-        return JSONResponse({"error": {"code": "invalid_request"}}, status_code=422)
+        return JSONResponse(await error_payload(request, "invalid_request"), status_code=422)
 
     async def execute(request, digest, operation, *args):
         await run_in_threadpool(store.reserve, digest)
         request.state.upstream_calls = 1
         results = await operation(*args)
         request.state.result_count = len(results)
-        return {"results": results}
+        return {"results": results, "quota": await run_in_threadpool(store.quota, digest)}
+
+    @app.post("/v1/register")
+    async def register(
+        request: Request,
+        data: RegistrationInput,
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(bearer),
+    ):
+        if credentials is None or not re.fullmatch(
+            r"[A-Za-z0-9_-]{43,128}", credentials.credentials
+        ):
+            raise AccessError("invalid_registration", 401)
+        digest, created = await run_in_threadpool(
+            store.register,
+            str(data.installation_id),
+            credentials.credentials,
+            settings.registration_enabled,
+            settings.registration_minute,
+            settings.registration_daily,
+        )
+        request.state.digest = digest
+        request.state.token_label = await run_in_threadpool(store.token_label, digest)
+        log.info(
+            "client_registered" if created else "registration_confirmed",
+            extra={
+                "fields": {
+                    "request_id": request.state.request_id,
+                    "token_label": request.state.token_label,
+                }
+            },
+        )
+        return {"registered": True, "quota": await run_in_threadpool(store.quota, digest)}
 
     @app.get("/healthz")
     async def health():
@@ -191,7 +235,7 @@ def create_app(config: Optional[Config] = None, provider=None):
     async def feature(request: Request, identifier: str, digest=Depends(authenticate)):
         if not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", identifier):
             request.state.error_code = "invalid_identifier"
-            return JSONResponse({"error": {"code": "invalid_identifier"}}, status_code=422)
+            return JSONResponse(await error_payload(request, "invalid_identifier"), status_code=422)
         return await execute(request, digest, app.state.provider.feature, identifier)
 
     @app.get("/v1/quota")

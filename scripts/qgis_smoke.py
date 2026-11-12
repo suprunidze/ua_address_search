@@ -1,6 +1,7 @@
 """QGIS test entry point; isolated settings/auth DB and real Qt event loop."""
 
 import argparse
+import faulthandler
 import os
 from pathlib import Path
 import sys
@@ -9,8 +10,10 @@ import unittest
 
 
 def main():
+    faulthandler.dump_traceback_later(45)
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--plugin-parent", type=Path, required=True)
+    parser.add_argument("--test-name", help="Run a specific unittest name from tests/qgis")
     args = parser.parse_args()
     root = Path(__file__).resolve().parents[1]
     sys.path.insert(0, str(root))
@@ -35,9 +38,13 @@ def main():
             actual = Path(ua_address_search.__file__).resolve().parent.parent
             if actual != args.plugin_parent.resolve():
                 raise RuntimeError("The wrong plugin copy was imported")
-            suite = unittest.defaultTestLoader.discover(
-                str(root / "tests/qgis"), pattern="test_*.py"
-            )
+            if args.test_name:
+                sys.path.insert(0, str(root / "tests/qgis"))
+                suite = unittest.defaultTestLoader.loadTestsFromName(args.test_name)
+            else:
+                suite = unittest.defaultTestLoader.discover(
+                    str(root / "tests/qgis"), pattern="test_*.py"
+                )
             result = unittest.TextTestRunner(verbosity=2).run(suite)
             app.processEvents()
             if result.wasSuccessful():
@@ -46,6 +53,7 @@ def main():
             return 1
         finally:
             app.exitQgis()
+            faulthandler.cancel_dump_traceback_later()
 
 
 if __name__ == "__main__":

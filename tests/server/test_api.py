@@ -52,7 +52,8 @@ class APITests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self.provider.calls, [])
         response = await self.client.post("/v1/search", json={"text": "Київ"}, headers=self.headers)
-        self.assertEqual(response.json(), {"results": []})
+        self.assertEqual(response.json()["results"], [])
+        self.assertEqual(response.json()["quota"]["remaining"], 9)
         self.app.state.store.revoke("test")
         self.assertEqual(
             (await self.client.get("/v1/quota", headers=self.headers)).status_code, 401

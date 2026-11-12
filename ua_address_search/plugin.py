@@ -1,6 +1,7 @@
 """QGIS entry point, shared search flow and complete lifecycle cleanup."""
 
 from pathlib import Path
+from dataclasses import replace
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QIcon
 
@@ -10,7 +11,7 @@ except ImportError:
     from qgis.PyQt.QtWidgets import QAction
 from qgis.core import QgsApplication, QgsCsException
 from .core.client import RequestTask
-from .core.cache import SessionCache, namespace
+from .core.cache import SessionCache
 from .core.models import SearchResult
 from .core.settings import Credentials, Settings
 from .locator import AddressLocatorFilter
@@ -30,8 +31,9 @@ class AddressSearchPlugin:
         self.tool = None
         self.previous_tool = None
         self.records = []
+        self.result_status = ""
         self.tasks = set()
-        self.generation = 0
+        self.generations = {"search": 0, "feature": 0}
         self.active = False
         self.cache = SessionCache()
 
@@ -42,6 +44,10 @@ class AddressSearchPlugin:
         if self.cache.closed:
             self.cache = SessionCache()
         self.dock = SearchDock(self.iface.mainWindow())
+        self.dock.auto_geometry.setChecked(self.settings.auto_geometry())
+        self.dock.geometry_toggled.connect(self.geometry_toggled)
+        self.dock.quota_changed.connect(self.update_quota)
+        self.cache.on_quota = self.dock.quota_changed.emit
         right = getattr(Qt, "RightDockWidgetArea", None)
         if right is None:
             right = Qt.DockWidgetArea.RightDockWidgetArea
@@ -51,12 +57,10 @@ class AddressSearchPlugin:
         self.tool.coordinates_selected.connect(self.reverse_at)
         self.dock.search_requested.connect(self.search)
         self.dock.selection_requested.connect(self.select)
-        self.dock.geometry_requested.connect(self.show_geometry)
         self.dock.download_requested.connect(self.download_selected)
         self.dock.reverse_requested.connect(self.activate_reverse)
         self.dock.settings_requested.connect(self.configure)
         self.dock.cancel_requested.connect(self.cancel)
-        self.dock.quota_requested.connect(lambda: self.start("quota"))
         icon = QIcon(str(Path(__file__).parent / "resources" / "icon.svg"))
         self.action = QAction(icon, "UA Address Search", self.iface.mainWindow())
         self.action.triggered.connect(self.open_panel)
@@ -76,7 +80,7 @@ class AddressSearchPlugin:
     def visibility_changed(self, visible):
         self.settings.set_visible(visible)
         if not visible:
-            self.cancel()
+            self.cancel(silent=True)
             self.restore_tool()
             self.display.clear()
 
@@ -84,7 +88,6 @@ class AddressSearchPlugin:
         self.dock.show()
         self.dock.raise_()
         self.dock.query.setFocus()
-        self.refresh_credentials()
 
     def refresh_credentials(self):
         try:
@@ -92,17 +95,21 @@ class AddressSearchPlugin:
         except ValueError as exc:
             self.dock.status.setText(str(exc))
             credentials = Credentials()
-        self.cache.set_identity(namespace(credentials.url, credentials.token))
+        changed = self.cache.identity != credentials.identity
+        self.cache.set_identity(credentials.identity)
+        if changed:
+            self.update_quota()
         if self.locator is not None:
             self.locator.credentials = credentials
         return credentials
 
     def configure(self):
-        self.cancel()
+        self.cancel(silent=True)
         dialog = SettingsDialog(self.settings, self.iface.mainWindow())
         run = getattr(dialog, "exec", None) or dialog.exec_
-        run()
-        self.refresh_credentials()
+        if run():
+            self.refresh_credentials()
+            self.select(self.dock.results.currentRow())
         dialog.deleteLater()
 
     def search(self, text):
@@ -111,42 +118,78 @@ class AddressSearchPlugin:
             return
         self.start("search", text.strip())
 
-    def cancel(self):
-        self.generation += 1
+    def cancel_tasks(self, channel=None, automatic_only=False):
+        channels = [channel] if channel else list(self.generations)
+        for current in channels:
+            if not automatic_only:
+                self.generations[current] += 1
         for task in list(self.tasks):
-            task.callback = None
-            task.cancel()
-        self.tasks.clear()
+            if task.channel in channels and (not automatic_only or not task.download_requested):
+                task.callback = None
+                task.cancel()
+                self.tasks.discard(task)
+        if self.dock is not None:
+            self.dock.busy(bool(self.tasks))
+
+    def cancel(self, silent=False):
+        active = bool(self.tasks) or (
+            self.tool is not None and self.iface.mapCanvas().mapTool() == self.tool
+        )
+        self.cancel_tasks()
         if self.tool is not None:
             self.restore_tool()
         if self.dock is not None:
             self.dock.busy(False)
-            self.dock.status.setText("Запит скасовано.")
+            if active and not silent:
+                self.dock.status.setText("Запит скасовано.")
 
     def start(self, operation, value=None, download=False):
         credentials = self.refresh_credentials()
-        identity = namespace(credentials.url, credentials.token)
+        identity = credentials.identity
+        channel = "feature" if operation == "feature" else "search"
         key = self.cache.key(identity, operation, value)
         for pending in self.tasks:
-            pending_identity = namespace(pending.credentials.url, pending.credentials.token)
+            pending_identity = pending.credentials.identity
             if (
                 not pending.feedback.isCanceled()
                 and self.cache.key(pending_identity, pending.operation, pending.value) == key
             ):
                 pending.download_requested = pending.download_requested or download
                 return
-        self.cancel()
+        if operation == "feature":
+            self.cancel_tasks("feature")
+        else:
+            found, cached_results = self.cache.peek(identity, operation, value)
+            keep_geometry = (
+                found
+                and cached_results
+                and any(
+                    task.channel == "feature" and task.value == cached_results[0]["id"]
+                    for task in self.tasks
+                )
+            )
+            if keep_geometry:
+                self.cancel_tasks("search")
+                self.restore_tool()
+            else:
+                self.cancel(silent=True)
         if not credentials.url or not credentials.token:
-            self.dock.status.setText("Відкрийте налаштування: потрібні URL сервера й токен.")
+            if credentials.url:
+                self.dock.status.setText(
+                    "Відкрийте налаштування й введіть власний ключ Visicom API."
+                )
             return
-        generation = self.generation
+        generation = self.generations[channel]
         self.dock.busy(True)
+        if operation != "feature":
+            self.dock.status.setText("Пошук…")
 
         def completed(task):
             self.tasks.discard(task)
-            if not self.active or generation != self.generation:
+            if not self.active or generation != self.generations[channel]:
                 return
-            self.dock.busy(False)
+            self.dock.busy(bool(self.tasks))
+            self.update_quota()
             if task.error:
                 self.dock.status.setText(task.error)
                 return
@@ -154,9 +197,9 @@ class AddressSearchPlugin:
                 remaining = task.result.get("remaining", "?")
                 self.dock.status.setText(f"Доступно запитів сьогодні: {remaining} (Europe/Kyiv).")
             elif operation == "feature":
-                if task.result:
-                    if self.show_record(task.result[0]):
-                        self.dock.status.setText("Геометрію показано.")
+                if task.result and task.result[0].geometry:
+                    if self.show_record(task.result[0], cached=False):
+                        self.dock.status.setText(self.result_status + " • Геометрію показано.")
                         if task.download_requested:
                             try:
                                 layer, added = download_geometry(task.result[0])
@@ -170,34 +213,88 @@ class AddressSearchPlugin:
                 else:
                     self.dock.status.setText("Геометрію не знайдено.")
             else:
+                first_id = task.result[0].id if task.result else None
+                if any(t.channel == "feature" and t.value != first_id for t in self.tasks):
+                    self.cancel_tasks("feature")
                 self.records = task.result
                 self.display.clear()
                 self.dock.show_results(self.records, operation == "reverse")
-                if len(self.records) == 1:
+                self.result_status = self.dock.status.text()
+                if self.records:
                     self.dock.results.setCurrentRow(0)
             if task.source != "network":
                 self.dock.status.setText(self.dock.status.text() + " • З кешу сесії")
 
         task = RequestTask(credentials, operation, value, completed, self.cache)
         task.download_requested = download
+        task.channel = channel
         self.tasks.add(task)
         QgsApplication.taskManager().addTask(task)
 
     def select(self, index):
         if 0 <= index < len(self.records):
-            self.show_record(self.records[index])
+            record = self.records[index]
+            if any(t.channel == "feature" and t.value != record.id for t in self.tasks):
+                self.cancel_tasks("feature")
+            self.show_record(record)
+            if self.dock.auto_geometry.isChecked():
+                found, cached = self.cache.peek(self.cache.identity, "feature", record.id)
+                if found:
+                    self.dock.status.setText(self.result_status + " • З кешу сесії")
+                else:
+                    self.start("feature", record.id)
 
-    def show_record(self, record):
+    def show_record(self, record, cached=True):
         try:
-            if self.cache.identity is not None:
+            if cached and self.dock.auto_geometry.isChecked() and self.cache.identity is not None:
                 found, records = self.cache.peek(self.cache.identity, "feature", record.id)
                 if found and records:
                     record = SearchResult.from_dict(records[0])
+            if cached and not self.dock.auto_geometry.isChecked():
+                record = replace(record, geometry=None)
             self.display.show(record)
             return True
         except (QgsCsException, ValueError) as exc:
             self.dock.status.setText("Не вдалося показати об’єкт: " + str(exc))
             return False
+
+    def geometry_toggled(self, enabled):
+        self.settings.set_auto_geometry(enabled)
+        if not enabled:
+            self.cancel_tasks("feature", automatic_only=True)
+            index = self.dock.results.currentRow()
+            if 0 <= index < len(self.records):
+                self.show_record(self.records[index])
+        else:
+            self.select(self.dock.results.currentRow())
+
+    def update_quota(self):
+        if self.dock is None:
+            return
+        with self.cache.lock:
+            quota = dict(self.cache.quota) if self.cache.quota else None
+        if not quota:
+            self.dock.quota.setText("Квота: ще немає даних")
+            return
+        if quota.get("local") and not self.settings.show_quota():
+            text = f"Виконано запитів сьогодні: {quota.get('used', 0)}"
+        else:
+            prefix = "Оцінка залишку" if quota.get("local") else "Доступно сьогодні"
+            text = (
+                f"{prefix}: {quota.get('remaining', '?')} / {quota.get('token_daily_limit', '?')}"
+            )
+            if quota.get("exceeded"):
+                text += f" • Перевищення: {quota['exceeded']}"
+        self.dock.quota.setText(text)
+        self.dock.quota.setToolTip(
+            "Europe/Kyiv • "
+            + str(quota.get("day", ""))
+            + (
+                " • Лише цей плагін на цьому комп’ютері; перевищення не блокує запити."
+                if quota.get("local")
+                else " • З урахуванням спільного ліміту сервера."
+            )
+        )
 
     def show_geometry(self, index):
         if 0 <= index < len(self.records):
@@ -245,16 +342,18 @@ class AddressSearchPlugin:
         except ValueError:
             self.dock.status.setText("Некоректний результат Locator.")
             return
-        self.cancel()
+        self.cancel(silent=True)
         self.records = [record]
         self.dock.show_results(self.records)
+        self.result_status = self.dock.status.text()
         self.dock.results.setCurrentRow(0)
 
     def unload(self):
         if not self.active:
             return
         self.active = False
-        self.cancel()
+        self.cancel(silent=True)
+        self.cache.on_quota = None
         self.cache.close()
         self.restore_tool()
         self.display.clear()

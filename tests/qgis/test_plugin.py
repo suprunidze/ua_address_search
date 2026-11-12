@@ -1,11 +1,15 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+from pathlib import Path
+from dataclasses import replace
+import tempfile
+import uuid
 import threading
 import time
 import unittest
 from unittest.mock import patch
 from qgis.PyQt.QtCore import QCoreApplication, QEvent
-from qgis.PyQt.QtWidgets import QMainWindow
+from qgis.PyQt.QtWidgets import QApplication, QMainWindow
 from qgis.core import (
     QgsApplication,
     QgsCoordinateReferenceSystem,
@@ -15,6 +19,7 @@ from qgis.core import (
     QgsPointXY,
     QgsSettings,
     QgsProject,
+    QgsNetworkAccessManager,
 )
 from qgis.gui import QgsMapCanvas
 from ua_address_search import classFactory
@@ -109,6 +114,8 @@ class Iface:
 class Handler(BaseHTTPRequestHandler):
     calls = []
     sessions = []
+    geometry_gate = None
+    geometry_started = threading.Event()
 
     def log_message(self, *args):
         pass
@@ -130,10 +137,25 @@ class Handler(BaseHTTPRequestHandler):
             code, content = 429, {"error": {"code": "daily_quota"}}
         elif self.path.startswith("/bad/"):
             content = None
+        elif self.path.startswith("/direct/"):
+            content = json.loads(
+                (Path(__file__).resolve().parents[1] / "fixtures/address.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+        elif self.path.startswith("/v1/register"):
+            content = {"registered": True}
         elif self.path.startswith("/v1/quota"):
             content = {"remaining": 97}
-        elif self.path.startswith("/v1/features/"):
+        elif "/v1/features/" in self.path:
             record = RECORD.to_dict()
+            record["id"] = self.path.rsplit("/", 1)[-1]
+            gate = type(self).geometry_gate
+            if record["id"] == "ADR_HOLD" and gate is not None:
+                type(self).geometry_started.set()
+                gate.wait(4)
+            if record["id"] == "ADR_SLOW":
+                time.sleep(0.35)
             record["geometry"] = {
                 "type": "Polygon",
                 "coordinates": [[[30.52, 50.45], [30.53, 50.45], [30.53, 50.46], [30.52, 50.45]]],
@@ -141,6 +163,13 @@ class Handler(BaseHTTPRequestHandler):
             content = {"results": [record]}
         else:
             content = {"results": [RECORD.to_dict()]}
+        if isinstance(content, dict) and not self.path.startswith("/direct/"):
+            content["quota"] = {
+                "observed_at": time.time_ns(),
+                "remaining": 100 - len(type(self).calls),
+                "token_daily_limit": 100,
+                "day": "2026-11-12",
+            }
         data = json.dumps(content).encode() if content is not None else b"not JSON"
         if self.path.startswith("/redirect/"):
             code = 302
@@ -175,6 +204,8 @@ class QgisTests(unittest.TestCase):
         self.plugin = None
         Handler.calls.clear()
         Handler.sessions.clear()
+        Handler.geometry_gate = None
+        Handler.geometry_started.clear()
         QgsSettings().remove(PREFIX)
         for key in LOCATOR_PREFIX_KEYS:
             QgsSettings().remove(key)
@@ -235,6 +266,8 @@ class QgisTests(unittest.TestCase):
 
     def test_network_errors_cancellation_and_headers(self):
         client = NetworkClient()
+        with self.assertRaisesRegex(ClientError, "Налаштуйте доступ"):
+            client.request(Credentials(), "search", "Київ")
         credentials = Credentials(self.url, "synthetic-token")
         self.assertEqual(client.request(credentials, "search", "Київ")[0], RECORD)
         self.assertEqual(Handler.calls[-1][1], "Bearer synthetic-token")
@@ -338,7 +371,11 @@ class QgisTests(unittest.TestCase):
             self.plugin.search("Київ")
             self.plugin.unload()
             self.assertTrue(
-                wait_until(lambda: QgsApplication.taskManager().countActiveTasks() == 0)
+                wait_until(lambda: QgsApplication.taskManager().countActiveTasks() == 0),
+                [
+                    (task.description(), str(task.status()), task.isCanceled())
+                    for task in QgsApplication.taskManager().tasks()
+                ],
             )
 
     def test_panel_locator_geometry_and_project_share_cache(self):
@@ -355,12 +392,12 @@ class QgisTests(unittest.TestCase):
             self.plugin.search("  КИЇВ ")
             self.assertTrue(wait_until(lambda: not self.plugin.tasks))
             self.assertIn("З кешу", self.plugin.dock.status.text())
-            self.assertEqual(len(Handler.calls), 1)
+            self.assertEqual(len(Handler.calls), 2)
             results = []
             self.iface.locator.foundResult.connect(results.append)
             self.iface.locator.fetchResults("адр Київ", QgsLocatorContext())
             self.assertTrue(wait_until(lambda: bool(results)))
-            self.assertEqual(len(Handler.calls), 1)
+            self.assertEqual(len(Handler.calls), 2)
             self.assertEqual(Handler.sessions[0], self.plugin.cache.session_id)
             self.plugin.show_geometry(0)
             self.assertTrue(wait_until(lambda: not self.plugin.tasks))
@@ -449,5 +486,203 @@ class QgisTests(unittest.TestCase):
             self.plugin.search("  КИЇВ ")
             self.assertEqual(len(self.plugin.tasks), 1)
             self.assertTrue(wait_until(lambda: not self.plugin.tasks))
-            self.assertEqual(len(Handler.calls), 1)
+            self.assertEqual(len(Handler.calls), 2)
             self.assertEqual(self.plugin.records, [RECORD])
+
+    def test_geometry_checkbox_copy_and_compact_actions(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        dock = self.plugin.dock
+        self.assertTrue(dock.auto_geometry.isChecked())
+        self.assertFalse(hasattr(dock, "quota_button"))
+        for button in (
+            dock.download_button,
+            dock.reverse_button,
+            dock.copy_button,
+            dock.cancel_button,
+            dock.settings_button,
+        ):
+            self.assertFalse(button.icon().isNull())
+            self.assertTrue(button.toolTip())
+        with patch.object(
+            Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
+        ):
+            dock.auto_geometry.setChecked(False)
+            self.plugin.search("Київ")
+            self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+            self.assertEqual(len(Handler.calls), 1)
+            self.assertIsNotNone(self.plugin.display.marker)
+            self.assertIsNone(self.plugin.display.band)
+            dock.copy_button.click()
+            self.assertEqual(QApplication.clipboard().text(), RECORD.label)
+            self.assertIn("99", dock.quota.text())
+            dock.auto_geometry.setChecked(True)
+            self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+            self.assertEqual(len(Handler.calls), 2)
+            self.assertIsNotNone(self.plugin.display.band)
+            dock.auto_geometry.setChecked(False)
+            self.assertIsNone(self.plugin.display.band)
+            self.assertIsNotNone(self.plugin.display.marker)
+            dock.auto_geometry.setChecked(True)
+            self.assertEqual(len(Handler.calls), 2)
+            self.assertIsNotNone(self.plugin.display.band)
+            self.assertTrue(Settings().auto_geometry())
+            self.plugin.cancel()
+            self.assertNotIn("скасовано", dock.status.text())
+
+    def test_anonymous_enrollment_and_existing_token_migration(self):
+        manager = QgsApplication.authManager()
+        self.assertTrue(manager.setMasterPassword("uaas-test-master-password", True))
+        settings = Settings()
+        settings.values.setValue(PREFIX + "server_url", self.url)
+        try:
+            first = settings.credentials()
+            second = Settings().credentials()
+            self.assertEqual(first, second)
+            uuid.UUID(first.installation_id)
+            self.assertGreaterEqual(len(first.token), 43)
+            self.assertNotIn(first.token, repr(first))
+            cache = SessionCache()
+            client = NetworkClient(cache)
+            client.request(first, "search", "Київ")
+            client.request(first, "feature", RECORD.id)
+            client.request(first, "search", " КИЇВ ")
+            self.assertEqual(
+                [p for p, _, _ in Handler.calls],
+                ["/v1/register", "/v1/search", "/v1/features/ADR_TEST"],
+            )
+            self.assertEqual(cache.quota["remaining"], 97)
+            cache.close()
+        finally:
+            identifier = settings.values.value(PREFIX + "authcfg", "")
+            if identifier:
+                manager.removeAuthenticationConfig(identifier)
+            settings.values.remove(PREFIX)
+        settings.save(self.url, "existing-private-token")
+        try:
+            self.assertEqual(settings.credentials().installation_id, "")
+            self.assertEqual(settings.credentials().token, "existing-private-token")
+            settings.save_mode("visicom", "own-private-key", 8, False)
+            direct = settings.credentials()
+            self.assertEqual(
+                (direct.mode, direct.token, direct.quota_limit, direct.show_quota),
+                ("visicom", "own-private-key", 8, False),
+            )
+            settings.save_mode("railway")
+            self.assertEqual(settings.credentials().token, "existing-private-token")
+        finally:
+            for key in ("authcfg", "visicom_authcfg"):
+                manager.removeAuthenticationConfig(settings.values.value(PREFIX + key, ""))
+
+    def test_direct_provider_cache_and_local_quota_without_railway(self):
+        with tempfile.TemporaryDirectory() as directory:
+            credentials = Credentials(
+                self.url + "/direct",
+                "private-visicom-key",
+                "visicom",
+                quota_limit=1,
+                usage_path=str(Path(directory) / "usage.sqlite"),
+            )
+            cache = SessionCache()
+            client = NetworkClient(cache)
+            results = client.request(credentials, "search", "Київ")
+            client.request(credentials, "search", " КИЇВ ")
+            self.assertEqual(len(Handler.calls), 1)
+            self.assertEqual(cache.quota["used"], 1)
+            client.request(credentials, "feature", results[0].id)
+            self.assertEqual(cache.quota["used"], 2)
+            self.assertEqual(cache.quota["exceeded"], 1)
+            client.request(credentials, "reverse", (30, 50))
+            self.assertEqual(len(Handler.calls), 3)
+            self.assertTrue(
+                all(path.startswith("/direct/") and auth is None for path, auth, _ in Handler.calls)
+            )
+            self.assertTrue(all(s is None for s in Handler.sessions))
+            self.assertEqual(cache.quota["used"], 3)
+            cache.close()
+
+    def test_selection_and_checkbox_reject_stale_geometry(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        with patch.object(
+            Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
+        ):
+            self.plugin.refresh_credentials()
+            self.plugin.records = [replace(RECORD, id="ADR_SLOW"), replace(RECORD, id="ADR_FAST")]
+            self.plugin.dock.show_results(self.plugin.records)
+            self.plugin.dock.results.setCurrentRow(0)
+            self.assertTrue(wait_until(lambda: bool(Handler.calls)))
+            self.plugin.dock.results.setCurrentRow(1)
+            self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+            self.assertIsNotNone(self.plugin.display.band)
+            self.assertEqual(self.plugin.dock.results.currentRow(), 1)
+            self.plugin.dock.auto_geometry.setChecked(False)
+            self.plugin.dock.results.setCurrentRow(0)
+            self.plugin.dock.auto_geometry.setChecked(True)
+            self.assertTrue(wait_until(lambda: bool(self.plugin.tasks)))
+            self.plugin.dock.auto_geometry.setChecked(False)
+            self.assertIsNone(self.plugin.display.band)
+            self.assertEqual(self.plugin.tasks, set())
+            self.assertTrue(
+                wait_until(lambda: QgsApplication.taskManager().countActiveTasks() == 0),
+                [
+                    (task.description(), str(task.status()), task.isCanceled())
+                    for task in QgsApplication.taskManager().tasks()
+                ],
+            )
+            self.assertIsNone(self.plugin.display.band)
+
+    def test_cached_repeat_preserves_pending_geometry(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        slow = replace(RECORD, id="ADR_HOLD")
+        Handler.geometry_gate = threading.Event()
+        original = NetworkClient._request
+
+        def request(client, credentials, operation, value=None, feedback=None):
+            records = original(client, credentials, operation, value, feedback)
+            return [slow] if operation == "search" else records
+
+        with patch.object(
+            Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
+        ):
+            with patch.object(NetworkClient, "_request", request):
+                try:
+                    self.plugin.search("Київ")
+                    self.assertTrue(
+                        wait_until(Handler.geometry_started.is_set),
+                        (Handler.calls, self.plugin.dock.status.text()),
+                    )
+                    self.plugin.search(" КИЇВ ")
+                    self.assertTrue(
+                        wait_until(
+                            lambda: not any(t.operation == "search" for t in self.plugin.tasks)
+                        )
+                    )
+                finally:
+                    Handler.geometry_gate.set()
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                self.assertEqual(len(Handler.calls), 2)
+                self.assertIsNotNone(self.plugin.display.band)
+
+    def test_cancel_during_reply_creation_and_timeout(self):
+        manager = QgsNetworkAccessManager.instance()
+        original_get = manager.get
+        feedback = QgsFeedback()
+
+        def get(request):
+            reply = original_get(request)
+            feedback.cancel()
+            return reply
+
+        started = time.monotonic()
+        with patch.object(manager, "get", get), self.assertRaises(ClientError):
+            NetworkClient().request(
+                Credentials(self.url, "synthetic-token"), "feature", RECORD.id, feedback
+            )
+        self.assertLess(time.monotonic() - started, 2)
+        with patch("ua_address_search.core.client.REQUEST_TIMEOUT_MS", 30):
+            with self.assertRaises(ClientError):
+                NetworkClient().request(
+                    Credentials(self.url + "/slow", "synthetic-token"), "search", "Київ"
+                )

@@ -6,6 +6,7 @@ import hashlib
 from pathlib import Path
 import secrets
 import sqlite3
+import time
 from typing import Iterator, Optional
 from zoneinfo import ZoneInfo
 
@@ -44,6 +45,10 @@ class Store:
                 CREATE TABLE IF NOT EXISTS minute (
                     bucket TEXT NOT NULL, hash TEXT NOT NULL, count INTEGER NOT NULL,
                     PRIMARY KEY(bucket, hash));
+                CREATE TABLE IF NOT EXISTS installations (
+                    id TEXT PRIMARY KEY, hash TEXT NOT NULL UNIQUE REFERENCES tokens(hash));
+                CREATE TABLE IF NOT EXISTS registrations (
+                    bucket TEXT PRIMARY KEY, count INTEGER NOT NULL);
             """)
 
     @contextmanager
@@ -64,6 +69,61 @@ class Store:
         with self.connection() as db:
             db.execute("INSERT INTO tokens(hash,label) VALUES (?,?)", (self.digest(token), label))
         return token
+
+    def register(self, identifier, token, enabled=True, minute_limit=10, daily_limit=100, now=None):
+        """Enroll once, preserving revocation and quotas across retries and restarts."""
+        digest = self.digest(token)
+        day, minute = self.clock(now)
+        with self.connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            try:
+                row = db.execute(
+                    "SELECT i.hash,t.revoked FROM installations i "
+                    "JOIN tokens t ON t.hash=i.hash WHERE i.id=?",
+                    (identifier,),
+                ).fetchone()
+                if row:
+                    if not secrets.compare_digest(row[0], digest):
+                        raise AccessError("registration_conflict", 409)
+                    if row[1]:
+                        raise AccessError("registration_revoked", 403)
+                    created = False
+                else:
+                    if not enabled:
+                        raise AccessError("registration_disabled", 403)
+                    for bucket, limit in (
+                        ("day:" + day, daily_limit),
+                        ("minute:" + minute, minute_limit),
+                    ):
+                        count = db.execute(
+                            "SELECT count FROM registrations WHERE bucket=?", (bucket,)
+                        ).fetchone()
+                        if count and count[0] >= limit:
+                            raise AccessError("registration_limit")
+                    if db.execute("SELECT 1 FROM tokens WHERE hash=?", (digest,)).fetchone():
+                        raise AccessError("registration_conflict", 409)
+                    db.execute(
+                        "INSERT INTO tokens(hash,label) VALUES (?,?)",
+                        (digest, "installation-" + identifier),
+                    )
+                    db.execute("INSERT INTO installations VALUES (?,?)", (identifier, digest))
+                    for bucket in ("day:" + day, "minute:" + minute):
+                        db.execute(
+                            "INSERT INTO registrations VALUES (?,1) ON CONFLICT(bucket) "
+                            "DO UPDATE SET count=count+1",
+                            (bucket,),
+                        )
+                    db.execute(
+                        "DELETE FROM registrations WHERE (bucket LIKE 'day:%' AND bucket<?) "
+                        "OR (bucket LIKE 'minute:%' AND bucket<?)",
+                        ("day:" + day, "minute:" + str(int(minute) - 2)),
+                    )
+                    created = True
+                db.execute("COMMIT")
+            except BaseException:
+                db.execute("ROLLBACK")
+                raise
+        return digest, created
 
     def revoke(self, label: str) -> int:
         with self.connection() as db:
@@ -140,8 +200,12 @@ class Store:
     def quota(self, digest: str, now: Optional[datetime] = None):
         day, _ = self.clock(now)
         with self.connection() as db:
+            db.execute("BEGIN")
             values = dict(db.execute("SELECT scope,count FROM daily WHERE day=?", (day,)))
+            observed_at = time.time_ns()
+            db.execute("COMMIT")
         return {
+            "observed_at": observed_at,
             "day": day,
             "timezone": "Europe/Kyiv",
             "remaining": max(

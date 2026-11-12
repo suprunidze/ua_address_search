@@ -8,7 +8,8 @@
   country=ua, limit=10; порядок результатів зберігається.
 - Зворотний пошук: categories=adr_address, near=lng,lat, radius=50,
   limit=1, order=distance, country=ua.
-- feature/{id}.json: повна геометрія лише за явною дією користувача.
+- feature/{id}.json: повна геометрія вибраного результату; автоматично, коли
+  ввімкнений чекбокс, або за кнопкою завантаження в шар. Кеш спільний для обох шляхів.
 - Відповідь може бути Feature або FeatureCollection. Геокодування повертає
   geo_centroid (Point) і bbox; properties різняться між категоріями.
 - Порожня FeatureCollection — коректний результат. Відсутній bbox дозволений;
