@@ -10,10 +10,11 @@ except ImportError:
     from qgis.PyQt.QtWidgets import QAction
 from qgis.core import QgsApplication, QgsCsException
 from .core.client import RequestTask
+from .core.cache import SessionCache, namespace
 from .core.models import SearchResult
 from .core.settings import Credentials, Settings
 from .locator import AddressLocatorFilter
-from .map_tools import MapDisplay, ReverseMapTool
+from .map_tools import MapDisplay, ReverseMapTool, download_geometry
 from .ui.search_dock import SearchDock
 from .ui.settings_dialog import SettingsDialog
 
@@ -32,11 +33,14 @@ class AddressSearchPlugin:
         self.tasks = set()
         self.generation = 0
         self.active = False
+        self.cache = SessionCache()
 
     def initGui(self):
         if self.active:
             return
         self.active = True
+        if self.cache.closed:
+            self.cache = SessionCache()
         self.dock = SearchDock(self.iface.mainWindow())
         right = getattr(Qt, "RightDockWidgetArea", None)
         if right is None:
@@ -48,6 +52,7 @@ class AddressSearchPlugin:
         self.dock.search_requested.connect(self.search)
         self.dock.selection_requested.connect(self.select)
         self.dock.geometry_requested.connect(self.show_geometry)
+        self.dock.download_requested.connect(self.download_selected)
         self.dock.reverse_requested.connect(self.activate_reverse)
         self.dock.settings_requested.connect(self.configure)
         self.dock.cancel_requested.connect(self.cancel)
@@ -58,8 +63,11 @@ class AddressSearchPlugin:
         self.iface.addToolBarIcon(self.action)
         self.iface.addPluginToMenu("UA Address Search", self.action)
         self.locator = AddressLocatorFilter(
-            activate=self.locator_activate, credentials_provider=self.refresh_credentials
+            activate=self.locator_activate,
+            credentials_provider=self.refresh_credentials,
+            cache=self.cache,
         )
+        self.settings.migrate_locator_prefix()
         self.iface.registerLocatorFilter(self.locator)
         # Unlock only when the user requests search; loading QGIS must never prompt.
         self.dock.visibilityChanged.connect(self.visibility_changed)
@@ -84,6 +92,7 @@ class AddressSearchPlugin:
         except ValueError as exc:
             self.dock.status.setText(str(exc))
             credentials = Credentials()
+        self.cache.set_identity(namespace(credentials.url, credentials.token))
         if self.locator is not None:
             self.locator.credentials = credentials
         return credentials
@@ -114,9 +123,19 @@ class AddressSearchPlugin:
             self.dock.busy(False)
             self.dock.status.setText("Запит скасовано.")
 
-    def start(self, operation, value=None):
-        self.cancel()
+    def start(self, operation, value=None, download=False):
         credentials = self.refresh_credentials()
+        identity = namespace(credentials.url, credentials.token)
+        key = self.cache.key(identity, operation, value)
+        for pending in self.tasks:
+            pending_identity = namespace(pending.credentials.url, pending.credentials.token)
+            if (
+                not pending.feedback.isCanceled()
+                and self.cache.key(pending_identity, pending.operation, pending.value) == key
+            ):
+                pending.download_requested = pending.download_requested or download
+                return
+        self.cancel()
         if not credentials.url or not credentials.token:
             self.dock.status.setText("Відкрийте налаштування: потрібні URL сервера й токен.")
             return
@@ -138,15 +157,29 @@ class AddressSearchPlugin:
                 if task.result:
                     if self.show_record(task.result[0]):
                         self.dock.status.setText("Геометрію показано.")
+                        if task.download_requested:
+                            try:
+                                layer, added = download_geometry(task.result[0])
+                                self.dock.status.setText(
+                                    "Геометрію додано до шару: " + layer.name()
+                                    if added
+                                    else "Об’єкт уже є в тимчасовому шарі."
+                                )
+                            except ValueError as exc:
+                                self.dock.status.setText(str(exc))
                 else:
                     self.dock.status.setText("Геометрію не знайдено.")
             else:
                 self.records = task.result
+                self.display.clear()
                 self.dock.show_results(self.records, operation == "reverse")
-                if operation == "reverse" and self.records:
-                    self.show_record(self.records[0])
+                if len(self.records) == 1:
+                    self.dock.results.setCurrentRow(0)
+            if task.source != "network":
+                self.dock.status.setText(self.dock.status.text() + " • З кешу сесії")
 
-        task = RequestTask(credentials, operation, value, completed)
+        task = RequestTask(credentials, operation, value, completed, self.cache)
+        task.download_requested = download
         self.tasks.add(task)
         QgsApplication.taskManager().addTask(task)
 
@@ -156,6 +189,10 @@ class AddressSearchPlugin:
 
     def show_record(self, record):
         try:
+            if self.cache.identity is not None:
+                found, records = self.cache.peek(self.cache.identity, "feature", record.id)
+                if found and records:
+                    record = SearchResult.from_dict(records[0])
             self.display.show(record)
             return True
         except (QgsCsException, ValueError) as exc:
@@ -165,6 +202,10 @@ class AddressSearchPlugin:
     def show_geometry(self, index):
         if 0 <= index < len(self.records):
             self.start("feature", self.records[index].id)
+
+    def download_selected(self, index):
+        if 0 <= index < len(self.records):
+            self.start("feature", self.records[index].id, download=True)
 
     def activate_reverse(self):
         canvas = self.iface.mapCanvas()
@@ -207,13 +248,14 @@ class AddressSearchPlugin:
         self.cancel()
         self.records = [record]
         self.dock.show_results(self.records)
-        self.show_record(record)
+        self.dock.results.setCurrentRow(0)
 
     def unload(self):
         if not self.active:
             return
         self.active = False
         self.cancel()
+        self.cache.close()
         self.restore_tool()
         self.display.clear()
         if self.locator is not None:

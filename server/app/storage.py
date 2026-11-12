@@ -19,12 +19,20 @@ class AccessError(Exception):
 
 
 class Store:
-    def __init__(self, path: str, daily: int = 1500, per_token: int = 100, per_minute: int = 10):
+    def __init__(
+        self,
+        path: str,
+        daily: int = 1500,
+        per_token: int = 100,
+        per_minute: int = 10,
+        token_overrides=None,
+    ):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.daily = daily
         self.per_token = per_token
         self.per_minute = per_minute
+        self.token_overrides = dict(token_overrides or {})
         with self.connection() as db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS tokens (
@@ -68,6 +76,18 @@ class Store:
                 return digest
         raise AccessError("unauthorized", 401)
 
+    def token_label(self, digest: str) -> str:
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT label FROM tokens WHERE hash=? AND revoked=0", (digest,)
+            ).fetchone()
+        if row is None:
+            raise AccessError("unauthorized", 401)
+        return row[0]
+
+    def token_limit(self, digest: str) -> int:
+        return self.token_overrides.get(digest, self.per_token)
+
     @staticmethod
     def clock(now: Optional[datetime] = None):
         current = now or datetime.now(ZoneInfo("Europe/Kyiv"))
@@ -91,7 +111,10 @@ class Store:
                 if row and row[0] >= self.per_minute:
                     raise AccessError("rate_limit")
                 if upstream:
-                    for scope, limit in (("global", self.daily), (digest, self.per_token)):
+                    for scope, limit in (
+                        ("global", self.daily),
+                        (digest, self.token_limit(digest)),
+                    ):
                         row = db.execute(
                             "SELECT count FROM daily WHERE day=? AND scope=?", (day, scope)
                         ).fetchone()
@@ -122,7 +145,11 @@ class Store:
             "day": day,
             "timezone": "Europe/Kyiv",
             "remaining": max(
-                0, min(self.daily - values.get("global", 0), self.per_token - values.get(digest, 0))
+                0,
+                min(
+                    self.daily - values.get("global", 0),
+                    self.token_limit(digest) - values.get(digest, 0),
+                ),
             ),
-            "token_daily_limit": self.per_token,
+            "token_daily_limit": self.token_limit(digest),
         }

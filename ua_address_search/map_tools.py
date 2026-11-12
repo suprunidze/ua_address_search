@@ -1,7 +1,7 @@
 """WGS84 transforms and temporary map overlays."""
 
 import json
-from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtCore import Qt, pyqtSignal, QVariant
 from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     QgsCoordinateReferenceSystem,
@@ -10,6 +10,10 @@ from qgis.core import (
     QgsPointXY,
     QgsProject,
     QgsRectangle,
+    QgsFeature,
+    QgsField,
+    QgsVectorLayer,
+    QgsWkbTypes,
 )
 from qgis.gui import QgsMapToolEmitPoint, QgsRubberBand, QgsVertexMarker
 
@@ -82,6 +86,9 @@ class MapDisplay:
             self.band.setColor(QColor(22, 115, 165, 90))
             self.band.setWidth(3)
             self.band.setToGeometry(geom)
+        self.canvas.flashGeometries([QgsGeometry.fromPointXY(center)])
+        if result.geometry:
+            self.canvas.flashGeometries([geom])
         self.canvas.refresh()
 
     def clear(self):
@@ -90,3 +97,69 @@ class MapDisplay:
                 self.canvas.scene().removeItem(item)
         self.marker = None
         self.band = None
+
+
+def download_geometry(result):
+    """Add one cached result to a plugin-owned memory layer, without duplicate IDs."""
+    if not result.geometry:
+        raise ValueError("Об’єкт не має геометрії для завантаження.")
+    from qgis.core import QgsJsonUtils
+
+    features = QgsJsonUtils.stringToFeatureList(
+        json.dumps({"type": "Feature", "properties": {}, "geometry": result.geometry})
+    )
+    if not features or features[0].geometry().isNull():
+        raise ValueError("Некоректна геометрія об’єкта.")
+    geom = QgsGeometry(features[0].geometry())
+    family = QgsWkbTypes.geometryDisplayString(geom.type())
+    type_name = {"Point": "MultiPoint", "Line": "MultiLineString", "Polygon": "MultiPolygon"}.get(
+        family
+    )
+    if type_name is None:
+        raise ValueError("Цей тип геометрії не підтримується.")
+    project = QgsProject.instance()
+    layer = next(
+        (
+            item
+            for item in project.mapLayers().values()
+            if isinstance(item, QgsVectorLayer)
+            and item.customProperty("ua_address_search/family", "") == family
+            and item.providerType() == "memory"
+            and item.crs().authid() == "EPSG:4326"
+            and all(
+                item.fields().indexFromName(key) >= 0
+                for key in ("visicom_id", "name", "address", "category", "attribution")
+            )
+        ),
+        None,
+    )
+    if layer is None:
+        names = {"Point": "точки", "Line": "лінії", "Polygon": "полігони"}
+        layer = QgsVectorLayer(
+            type_name + "?crs=EPSG:4326", "UA Address Search — " + names[family], "memory"
+        )
+        layer.setCustomProperty("ua_address_search/family", family)
+        layer.dataProvider().addAttributes(
+            [
+                QgsField(key, QVariant.String)
+                for key in ("visicom_id", "name", "address", "category", "attribution")
+            ]
+        )
+        layer.updateFields()
+        project.addMapLayer(layer)
+    index = layer.fields().indexFromName("visicom_id")
+    if any(feature[index] == result.id for feature in layer.getFeatures()):
+        return layer, False
+    if not geom.isMultipart():
+        geom.convertToMultiType()
+    feature = QgsFeature(layer.fields())
+    feature.setGeometry(geom)
+    feature.setAttributes(
+        [result.id, result.label, result.address, result.category, result.attribution]
+    )
+    success, _ = layer.dataProvider().addFeatures([feature])
+    if not success:
+        raise ValueError("Не вдалося додати об’єкт до тимчасового шару.")
+    layer.updateExtents()
+    layer.triggerRepaint()
+    return layer, True

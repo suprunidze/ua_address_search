@@ -4,9 +4,10 @@
 - `ua_address_search/__init__.py`: QGIS classFactory; `plugin.py`: життєвий цикл,
   задачі, панель, Locator і відображення результатів.
 - `core/models.py`: незалежні від QGIS моделі, нормалізація Visicom та перевірка WGS84.
+- `core/cache.py`: спільний кеш сесії 128 МіБ, LRU, об’єднання запитів та скасування.
 - `core/client.py`: HTTP через QgsNetworkAccessManager, RequestTask і скасування.
 - `core/settings.py`: URL, стан панелі, Authentication Manager для токенів.
-- `locator.py`: фільтр `uas`, підготовка облікових даних у GUI-потоці.
+- `locator.py`: фільтр `адр`, підготовка облікових даних у GUI-потоці.
 - `map_tools.py`: зворотний пошук, CRS, тимчасові маркери та геометрія.
 - `ui/search_dock.py`, `ui/settings_dialog.py`: інтерфейс Qt5/Qt6.
 - `resources/icon.svg`: іконка. `metadata.txt`: версія. `LICENSE`: копія MIT.
@@ -15,7 +16,8 @@
 - `server/app/main.py`: фабрика FastAPI та маршрути /v1/*, /healthz.
 - `config.py`, `run.py`: параметри середовища й локальний запуск із .env.
 - `schemas.py`: публічний контракт введення; `visicom.py`: upstream-адаптер.
-- `storage.py`: хеші токенів та транзакційні квоти SQLite.
+- `storage.py`: хеші токенів та транзакційні квоти SQLite, перевизначення ліміту за хешем.
+- `journal.py`: явний stdout JSON-журнал INFO без адрес, координат або секретів.
 - `tokens.py`: видача й відкликання персональних токенів через CLI.
 - `server/requirements.txt`, `Dockerfile`, `railway.toml`: середовище Railway.
 

@@ -6,13 +6,14 @@ from .core.settings import Credentials
 
 
 class AddressLocatorFilter(QgsLocatorFilter):
-    def __init__(self, credentials=None, activate=None, credentials_provider=None):
+    def __init__(self, credentials=None, activate=None, credentials_provider=None, cache=None):
         super().__init__()
         self.credentials = credentials or Credentials()
         self.activate = activate
         self.credentials_provider = credentials_provider
+        self.cache = cache
         self.setUseWithoutPrefix(False)
-        self.setFetchResultsDelay(700)
+        self.setFetchResultsDelay(1000)
 
     def name(self):
         return "ua_address_search"
@@ -21,7 +22,7 @@ class AddressLocatorFilter(QgsLocatorFilter):
         return "Адреси України (Visicom)"
 
     def prefix(self):
-        return "uas"
+        return "адр"
 
     def prepare(self, string, context):
         if context.usingPrefix and len(string.strip()) >= 3 and self.credentials_provider:
@@ -29,14 +30,16 @@ class AddressLocatorFilter(QgsLocatorFilter):
         return []
 
     def clone(self):
-        return AddressLocatorFilter(self.credentials, self.activate, self.credentials_provider)
+        return AddressLocatorFilter(
+            self.credentials, self.activate, self.credentials_provider, self.cache
+        )
 
     def fetchResults(self, string, context, feedback):
         text = string.strip()
         if len(text) < 3 or feedback.isCanceled() or not context.usingPrefix:
             return
         try:
-            records = NetworkClient().request(self.credentials, "search", text, feedback)
+            records = NetworkClient(self.cache).request(self.credentials, "search", text, feedback)
         except ClientError as exc:
             if not feedback.isCanceled():
                 result = QgsLocatorResult()

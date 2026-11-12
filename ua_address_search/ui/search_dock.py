@@ -17,6 +17,7 @@ class SearchDock(QDockWidget):
     search_requested = pyqtSignal(str)
     selection_requested = pyqtSignal(int)
     geometry_requested = pyqtSignal(int)
+    download_requested = pyqtSignal(int)
     reverse_requested = pyqtSignal()
     settings_requested = pyqtSignal()
     cancel_requested = pyqtSignal()
@@ -29,7 +30,7 @@ class SearchDock(QDockWidget):
         layout = QVBoxLayout(body)
         row = QHBoxLayout()
         self.query = QLineEdit()
-        self.query.setPlaceholderText("Наприклад: Київ, Хрещатик, 26")
+        self.query.setPlaceholderText("Київ, Хрещатик, 26 • Locator: адр адреса")
         self.query.setAccessibleName("Адреса для пошуку")
         self.search_button = QPushButton("Знайти")
         row.addWidget(self.query)
@@ -43,10 +44,17 @@ class SearchDock(QDockWidget):
         layout.addWidget(self.status)
         self.geometry_button = QPushButton("Показати геометрію")
         self.geometry_button.setEnabled(False)
+        self.download_button = QPushButton("Завантажити геометрію")
+        self.download_button.setEnabled(False)
         self.reverse_button = QPushButton("Найближча адреса за кліком")
         self.cancel_button = QPushButton("Скасувати")
         self.cancel_button.setEnabled(False)
-        for button in (self.geometry_button, self.reverse_button, self.cancel_button):
+        for button in (
+            self.geometry_button,
+            self.download_button,
+            self.reverse_button,
+            self.cancel_button,
+        ):
             layout.addWidget(button)
         row = QHBoxLayout()
         self.settings_button = QPushButton("Налаштування")
@@ -63,19 +71,22 @@ class SearchDock(QDockWidget):
         self.results.itemActivated.connect(
             lambda item: self.selection_requested.emit(self.results.row(item))
         )
-        self.results.itemClicked.connect(
-            lambda item: self.selection_requested.emit(self.results.row(item))
-        )
-        self.results.currentRowChanged.connect(
-            lambda row: self.geometry_button.setEnabled(row >= 0)
-        )
+        self.results.currentRowChanged.connect(self.row_changed)
         self.geometry_button.clicked.connect(
             lambda: self.geometry_requested.emit(self.results.currentRow())
+        )
+        self.download_button.clicked.connect(
+            lambda: self.download_requested.emit(self.results.currentRow())
         )
         self.reverse_button.clicked.connect(self.reverse_requested.emit)
         self.settings_button.clicked.connect(self.settings_requested.emit)
         self.quota_button.clicked.connect(self.quota_requested.emit)
         self.cancel_button.clicked.connect(self.cancel_requested.emit)
+
+    def row_changed(self, row):
+        self.geometry_button.setEnabled(row >= 0)
+        self.download_button.setEnabled(row >= 0)
+        self.selection_requested.emit(row)
 
     def submit(self):
         self.search_requested.emit(self.query.text().strip())
@@ -93,4 +104,4 @@ class SearchDock(QDockWidget):
     def busy(self, active):
         self.cancel_button.setEnabled(active)
         if active:
-            self.status.setText("Знайти")
+            self.status.setText("Пошук…")

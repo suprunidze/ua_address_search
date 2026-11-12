@@ -4,8 +4,9 @@ import json
 from urllib.parse import quote
 from qgis.PyQt.QtCore import QUrl
 from qgis.PyQt.QtNetwork import QNetworkReply, QNetworkRequest
-from qgis.core import QgsFeedback, QgsNetworkAccessManager, QgsTask
+from qgis.core import QgsFeedback, QgsNetworkAccessManager, QgsTask, QgsMessageLog, Qgis
 from .models import InvalidProviderData, SearchResult
+from .cache import CacheCancelled, namespace
 from .settings import validate_url
 
 MESSAGES = {
@@ -27,7 +28,42 @@ class ClientError(Exception):
 
 
 class NetworkClient:
+    def __init__(self, cache=None):
+        self.cache = cache
+        self.last_source = "network"
+
     def request(self, credentials, operation, value=None, feedback=None):
+        feedback = feedback or QgsFeedback()
+        if self.cache is None or operation == "quota":
+            self.last_source = "network"
+            return self._request(credentials, operation, value, feedback)
+        if not credentials.url or not credentials.token:
+            raise ClientError("Спочатку налаштуйте URL сервера і персональний токен.")
+
+        def load(shared_feedback):
+            records = self._request(credentials, operation, value, shared_feedback)
+            return [record.to_dict() for record in records]
+
+        try:
+            data, self.last_source = self.cache.resolve(
+                namespace(credentials.url, credentials.token),
+                operation,
+                value,
+                load,
+                feedback,
+                QgsFeedback,
+            )
+        except CacheCancelled:
+            raise ClientError("Запит скасовано.") from None
+        if self.last_source != "network":
+            QgsMessageLog.logMessage(
+                "Кеш сесії: " + operation + " (" + self.last_source + ")",
+                "UA Address Search",
+                Qgis.MessageLevel.Info,
+            )
+        return [SearchResult.from_dict(record) for record in data]
+
+    def _request(self, credentials, operation, value=None, feedback=None):
         if not credentials.url or not credentials.token:
             raise ClientError("Спочатку налаштуйте URL сервера і персональний токен.")
         try:
@@ -51,6 +87,8 @@ class NetworkClient:
         request.setRawHeader(b"Authorization", ("Bearer " + credentials.token).encode("utf-8"))
         request.setRawHeader(b"Content-Type", b"application/json")
         request.setRawHeader(b"Accept", b"application/json")
+        if self.cache is not None:
+            request.setRawHeader(b"X-UAAS-Session-ID", self.cache.session_id.encode("ascii"))
         request.setTransferTimeout(18000)
         # Never forward a credential to a redirected host, even on HTTPS.
         policy = getattr(QNetworkRequest, "RedirectPolicyAttribute", None)
@@ -102,7 +140,7 @@ class NetworkClient:
 
 
 class RequestTask(QgsTask):
-    def __init__(self, credentials, operation, value, callback):
+    def __init__(self, credentials, operation, value, callback, cache=None):
         flag = getattr(QgsTask, "CanCancel", None)
         if flag is None:
             flag = QgsTask.Flag.CanCancel
@@ -114,12 +152,15 @@ class RequestTask(QgsTask):
         self.feedback = QgsFeedback()
         self.result = None
         self.error = None
+        self.client = NetworkClient(cache)
+        self.source = "network"
 
     def run(self):
         try:
-            self.result = NetworkClient().request(
+            self.result = self.client.request(
                 self.credentials, self.operation, self.value, self.feedback
             )
+            self.source = self.client.last_source
             return True
         except ClientError as exc:
             self.error = str(exc)

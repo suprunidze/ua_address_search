@@ -6,6 +6,10 @@ from urllib.parse import urlsplit
 from qgis.core import QgsApplication, QgsAuthMethodConfig, QgsSettings
 
 PREFIX = "ua_address_search/"
+LOCATOR_PREFIX_KEYS = (
+    "gui/locator_filters/prefix_ua_address_search",
+    "locator-filters/items/ua_address_search/prefix",
+)
 
 
 def validate_url(value: str) -> str:
@@ -38,6 +42,11 @@ class Credentials:
 class Settings:
     def __init__(self):
         self.values = QgsSettings()
+
+    def migrate_locator_prefix(self) -> None:
+        for key in LOCATOR_PREFIX_KEYS:
+            if self.values.value(key, "") == "uas":
+                self.values.setValue(key, "адр")
 
     def url(self) -> str:
         return str(self.values.value(PREFIX + "server_url", ""))
