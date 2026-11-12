@@ -1,7 +1,7 @@
 # Railway deployment — 2026-11-12
 
 - Workspace: suprunidze's Projects; project: inspiring-smile.
-- Service: ua_address_search; environment: production; source: main, 94a9d3f.
+- Service: ua_address_search; environment: production; початковий source: main, 94a9d3f.
 - Public HTTPS: https://uaaddresssearch-production.up.railway.app.
 - Docker build і запуск успішні; Python 3.12, один Uvicorn worker.
 - Постійний Volume 500 МБ: /data; SQLite: /data/uaas.sqlite3.
@@ -31,7 +31,7 @@
 - Налаштування і проєкти відкритих QGIS не змінювалися; перевірки ізольовані.
 - Санітизований звіт: artifacts/railway_deployment_verification.json (не в Git).
 
-## Підключення користувача
+## Підключення користувача до 0.1.0.3
 
 У налаштуваннях плагіна вкажіть HTTPS URL вище та токен із локального
 ігнорованого файла artifacts/railway-suprunidze-qgis.secret. Значення токена
@@ -56,3 +56,32 @@ request_completed у JSON INFO; включені авторизовані зап
 ZIP 0.1.0.3 встановлено в QGIS3/QGIS4 профілі 1545/default і перевірено в
 усіх доступних підтримуваних версіях. Після синхронізації запущений QGIS
 потребує перезавантаження плагіна або перезапуску застосунку.
+
+## Оновлення 0.1.0.4
+
+- Deployment `90a3dd23-6e36-432d-917a-9ce873eebbdd`, commit `c300640`, main — SUCCESS.
+- Docker build і healthcheck успішні. Постійний том /data, штатний start command,
+  один worker та всі секретні змінні залишені без змін; bootstrap не використовувався.
+- Наявний токен активний: ліміт 1000, залишок 928 до й після deployment.
+  Отже наявна SQLite-база та лічильники пережили оновлення без скидання.
+- /healthz повертає 200; /v1/quota без авторизації — 401.
+- Установлена копія QGIS4/default (QGIS 4.0.2, Qt6), ізольовані налаштування/auth DB:
+  автоматична реєстрація нової інсталяції, пошук, flash точки та повна геометрія — PASS.
+- Новий доступ має ліміт 100; пошук і геометрія витратили рівно 2 upstream-запити,
+  залишок 98. Перевірку виконано з явним бюджетом максимум 2, без повторів upstream.
+- Повтор пошуку з іншим регістром/пробілами та два завантаження геометрії в шар
+  не створили HTTP-запитів; у шарі один об’єкт, дублікатів немає.
+- Повтор /v1/register із тією самою парою UUID/секрет повернув registered=true,
+  залишок 98 збережено; новий обліковий запис повторно не створювався.
+- Railway Logs для контрольної сесії: 1 client_connected, 4 request_completed
+  (register/search/feature/register), upstream_calls разом 2. Приватність журналів
+  перевірена на фактичних секретах і їхніх хешах: адрес, координат, ключів і токенів немає.
+- Тимчасовий auth-каталог тесту видалено після завершення QGIS-процесу: Windows
+  утримував файл qgis-auth.db відкритим до повного виходу. Робочі профілі не змінювалися.
+- Санітизовані локальні звіти: artifacts/release004_production_verification.json,
+  artifacts/release004_existing_token_verification.json, artifacts/release004_railway_logs.json.
+  Тестовий секрет збережений лише в ігнорованому .secret-файлі, до Git не додається.
+
+У версії 0.1.0.4 виберіть «Спільний доступ Railway»: вводити токен не потрібно,
+інсталяція реєструється при першому запиті. Наявний персональний доступ переноситься
+автоматично. Власний ключ Visicom працює напряму незалежно від Railway.
