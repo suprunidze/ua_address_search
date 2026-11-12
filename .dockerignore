@@ -1,0 +1,9 @@
+.git
+.env
+.env.*
+*.secret
+*.sqlite*
+artifacts
+__pycache__
+.venv
+dist
