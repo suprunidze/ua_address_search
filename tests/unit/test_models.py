@@ -2,7 +2,7 @@ import copy
 import json
 from pathlib import Path
 import unittest
-from ua_address_search.core.models import InvalidProviderData, SearchResult, normalize, point
+from visicom_data_api.core.models import InvalidProviderData, SearchResult, normalize, point
 
 FIXTURE = Path(__file__).resolve().parents[1] / "fixtures/address.json"
 

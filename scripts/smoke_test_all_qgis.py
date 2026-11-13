@@ -14,6 +14,9 @@ ROOT = Path(__file__).resolve().parents[1]
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--installed", action="store_true", help="Also test synced profile copies")
+    parser.add_argument(
+        "--plugin-parent", type=Path, help="Test an extracted release instead of the source tree"
+    )
     args = parser.parse_args()
     rows = []
     program_files = Path(os.environ.get("ProgramFiles", "C:/Program Files"))
@@ -24,14 +27,14 @@ def main():
         launchers = list((directory / "bin").glob("python-qgis*.bat"))
         if not launchers:
             continue
-        parents = [ROOT]
+        parents = [(args.plugin_parent or ROOT).resolve()]
         if args.installed:
             generation = "QGIS4" if int(match[1]) >= 4 else "QGIS3"
             profiles = Path(os.environ["APPDATA"]) / "QGIS" / generation / "profiles"
             parents.extend(
                 p / "python" / "plugins"
                 for p in sorted(profiles.glob("*"))
-                if (p / "python" / "plugins" / "ua_address_search").is_dir()
+                if (p / "python" / "plugins" / "visicom_data_api").is_dir()
             )
         for parent in parents:
             env = dict(
@@ -81,7 +84,13 @@ def main():
                     encoding="utf-8", errors="replace"
                 )
                 passed = False
-            kind = "source" if parent == ROOT else str(parent.parent.parent.name)
+            kind = (
+                "source"
+                if parent == ROOT
+                else "package"
+                if args.plugin_parent and parent == args.plugin_parent.resolve()
+                else str(parent.parent.parent.name)
+            )
             print(f"{directory.name} [{kind}]: {'PASS' if passed else 'FAIL'}", flush=True)
             if not passed:
                 print(output[-8000:])

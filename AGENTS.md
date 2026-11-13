@@ -1,16 +1,16 @@
 # Інструкції для AI-асистента
 
 ## Проєкт
-- Відповідай українською. Власний код UA Address Search має ліцензію MIT.
+- Відповідай українською. Власний код Visicom Data API for QGIS має ліцензію MIT.
 - Перед роботою з кодом звіряйся зі STRUCTURE.md; великі файли читай точково через rg.
-- Плагін: ua_address_search/. Сервер: server/. Дослідження: research/.
+- Плагін: visicom_data_api/. Сервер: server/. Дослідження: research/.
 - Сумісність QGIS 3.28–4.99, Qt5/Qt6, Python 3.9+ у плагіні; сервер Python 3.12.
 - Використовуй qgis.PyQt, мережеві засоби QGIS, зрозумілі назви й PEP 8.
 - Не змінюй архітектуру й сторонні файли без потреби. Коментуй неочевидну логіку.
 
 ## Версії та релізи
 - Кожна завершена ітерація змін робочого коду інкрементує четверту цифру версії
-  в ua_address_search/metadata.txt; оновлюй CHANGELOG.md та dist/plugins.xml.
+  в visicom_data_api/metadata.txt; оновлюй CHANGELOG.md та dist/plugins.xml.
 - Після змін плагіна запускай python -B scripts/package_plugin.py та
   python -B scripts/sync_to_profiles.py. ZIP містить MIT LICENSE, не містить
   секретів, кешів, тестів або файлів, виключених .gitignore.

@@ -1,13 +1,13 @@
 <?xml version='1.0' encoding='utf-8'?>
 <plugins>
-  <pyqgis_plugin name="UA Address Search" version="0.1.0.7">
-    <description>Пошук адрес України через Visicom</description>
-    <version>0.1.0.7</version>
+  <pyqgis_plugin name="Visicom Data API for QGIS" version="0.1.0.8">
+    <description>Адреси, об’єкти, маршрути та Processing через Visicom Data API</description>
+    <version>0.1.0.8</version>
     <qgis_minimum_version>3.28</qgis_minimum_version>
     <qgis_maximum_version>4.99</qgis_maximum_version>
-    <author_name>UA Address Search contributors</author_name>
+    <author_name>Visicom Data API for QGIS contributors</author_name>
     <experimental>True</experimental>
-    <file_name>ua_address_search.zip</file_name>
-    <download_url>ua_address_search.zip</download_url>
+    <file_name>visicom_data_api.zip</file_name>
+    <download_url>visicom_data_api.zip</download_url>
   </pyqgis_plugin>
 </plugins>

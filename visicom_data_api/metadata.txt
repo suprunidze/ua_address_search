@@ -1,0 +1,15 @@
+[general]
+name=Visicom Data API for QGIS
+qgisMinimumVersion=3.28
+qgisMaximumVersion=4.99
+version=0.1.0.8
+author=Visicom Data API for QGIS contributors
+email=
+description=Адреси, об’єкти, маршрути, матриці відстаней, оптимізація та прив’язка до доріг Visicom.
+about=Шість вкладок через Railway або власний ключ Visicom; вісім алгоритмів Processing лише з власним ключем, Locator і кеш сесії. Код: MIT. Дані: Visicom та відповідні правовласники.
+category=Web
+icon=resources/icon.svg
+experimental=True
+deprecated=False
+hasProcessingProvider=True
+tags=address,geocoding,routing,matrix,optimization,snapping,processing,Ukraine,Visicom

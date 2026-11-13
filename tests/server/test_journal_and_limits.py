@@ -86,7 +86,7 @@ class JournalTests(unittest.IsolatedAsyncioTestCase):
                     await client.post("/v1/search", json={"text": "private-address-26"})
                     await client.post("/v1/search", json={"text": "x"}, headers=headers)
                     await client.post(
-                        "/v1/search", content=b"private-address-26" * 400, headers=headers
+                        "/v1/search", content=b"private-address-26" * 4000, headers=headers
                     )
                 events = [json.loads(line) for line in stream.getvalue().splitlines()]
                 self.assertEqual(sum(e["event"] == "client_connected" for e in events), 1)

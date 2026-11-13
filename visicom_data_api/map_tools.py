@@ -165,7 +165,7 @@ def download_geometry(result, bridge=None):
             item
             for item in project.mapLayers().values()
             if isinstance(item, QgsVectorLayer)
-            and item.customProperty("ua_address_search/family", "") == family
+            and item.customProperty("visicom_data_api/family", "") == family
             and item.providerType() == "memory"
             and item.crs().authid() == "EPSG:4326"
             and all(
@@ -179,9 +179,9 @@ def download_geometry(result, bridge=None):
     if new_layer:
         names = {"Point": "точки", "Line": "лінії", "Polygon": "полігони"}
         layer = QgsVectorLayer(
-            type_name + "?crs=EPSG:4326", "UA Address Search — " + names[family], "memory"
+            type_name + "?crs=EPSG:4326", "Visicom Data API for QGIS — " + names[family], "memory"
         )
-        layer.setCustomProperty("ua_address_search/family", family)
+        layer.setCustomProperty("visicom_data_api/family", family)
         layer.dataProvider().addAttributes(
             [
                 QgsField(key, QVariant.String)

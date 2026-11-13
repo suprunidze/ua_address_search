@@ -1,4 +1,4 @@
-"""UA Address Search proxy: one replica, persistent SQLite volume."""
+"""Visicom Data API for QGIS proxy: one replica, persistent SQLite volume."""
 
 from contextlib import asynccontextmanager
 import time
@@ -14,9 +14,10 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.concurrency import run_in_threadpool
 from .config import Config
 from .journal import configure
-from .schemas import RegistrationInput, ReverseInput, SearchInput
+from .schemas import RegistrationInput, ReverseInput, SearchInput, OPERATION_INPUTS
 from .storage import AccessError, Store
 from .visicom import ProviderError, Visicom
+from visicom_data_api.core.operations import PATHS
 
 log = configure()
 
@@ -39,7 +40,7 @@ def create_app(config: Optional[Config] = None, provider=None):
             yield
             log.info("server_stopped")
 
-    app = FastAPI(title="UA Address Search", version="1.0", lifespan=lifespan)
+    app = FastAPI(title="Visicom Data API for QGIS", version="1.0", lifespan=lifespan)
     app.state.store = store
     if provider is not None:
         app.state.provider = provider
@@ -90,16 +91,16 @@ def create_app(config: Optional[Config] = None, provider=None):
         response = None
         try:
             size = request.headers.get("content-length", "0")
-            if not size.isdigit() or int(size) > 4096:
+            if not size.isdigit() or int(size) > 65536:
                 request.state.error_code = "request_too_large"
                 response = JSONResponse({"error": {"code": "request_too_large"}}, status_code=413)
             else:
                 body = bytearray()
                 async for chunk in request.stream():
                     body.extend(chunk)
-                    if len(body) > 4096:
+                    if len(body) > 65536:
                         break
-                if len(body) > 4096:
+                if len(body) > 65536:
                     request.state.error_code = "request_too_large"
                     response = JSONResponse(
                         {"error": {"code": "request_too_large"}}, status_code=413
@@ -119,6 +120,7 @@ def create_app(config: Optional[Config] = None, provider=None):
                 "/v1/quota": "quota",
                 "/v1/register": "register",
             }
+            routes.update({path: operation for operation, path in PATHS.items()})
             if path.startswith("/v1/features/"):
                 route, operation = "/v1/features/{id}", "feature"
             else:
@@ -242,5 +244,20 @@ def create_app(config: Optional[Config] = None, provider=None):
     async def quota(digest=Depends(authenticate)):
         await run_in_threadpool(store.reserve, digest, False)
         return await run_in_threadpool(store.quota, digest)
+
+    def add_operation(operation, path):
+        async def endpoint(data, request: Request, digest=Depends(authenticate)):
+            await run_in_threadpool(store.reserve, digest)
+            request.state.upstream_calls = 1
+            result = await app.state.provider.operation(
+                operation, data.model_dump(mode="json", exclude_none=True))
+            request.state.result_count = len(result) if isinstance(result, list) else 1
+            return {"result": result, "quota": await run_in_threadpool(store.quota, digest)}
+
+        endpoint.__annotations__["data"] = OPERATION_INPUTS[operation]
+        app.add_api_route(path, endpoint, methods=["POST"], name=operation)
+
+    for operation, path in PATHS.items():
+        add_operation(operation, path)
 
     return app

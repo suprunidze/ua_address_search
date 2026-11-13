@@ -12,7 +12,7 @@ class QuotaDialog(QDialog):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("UA Address Search — добову квоту вичерпано")
+        self.setWindowTitle("Visicom Data API for QGIS — добову квоту вичерпано")
         self.setMinimumWidth(500)
         layout = QVBoxLayout(self)
         self.message = QLabel(

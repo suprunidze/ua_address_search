@@ -20,8 +20,10 @@ from qgis.PyQt.QtWidgets import (
     QToolButton,
     QVBoxLayout,
     QWidget,
+    QTabWidget,
 )
 from qgis.core import QgsApplication
+from .function_tabs import FunctionPage, TITLES, OPERATIONS
 
 
 class SearchDock(QDockWidget):
@@ -37,10 +39,17 @@ class SearchDock(QDockWidget):
     access_error = pyqtSignal(object)
 
     def __init__(self, parent=None):
-        super().__init__("UA Address Search", parent)
-        self.setObjectName("UAAddressSearchDock")
+        super().__init__("Visicom Data API for QGIS", parent)
+        self.setObjectName("VisicomDataApiDock")
         body = QWidget(self)
-        layout = QVBoxLayout(body)
+        outer = QVBoxLayout(body)
+        self.tabs = QTabWidget()
+        self.tabs.setUsesScrollButtons(True)
+        self.tabs.setDocumentMode(True)
+        outer.addWidget(self.tabs)
+        self.address_page = QWidget()
+        self.tabs.addTab(self.address_page, TITLES[0])
+        layout = QVBoxLayout(self.address_page)
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
         row = QHBoxLayout()
@@ -79,9 +88,7 @@ class SearchDock(QDockWidget):
         row.addWidget(self.copy_button)
         row.addStretch()
         self.settings_button = self.button("Налаштування", "mActionOptions.svg", True)
-        self.help_button = self.button("Допомога", "mActionHelpContents.svg")
-        row.addWidget(self.settings_button)
-        row.addWidget(self.help_button)
+        self.help_button = self.button("Довідка", "mActionHelpContents.svg")
         layout.addLayout(row)
         self.download_button.setEnabled(False)
         self.copy_button.setEnabled(False)
@@ -89,7 +96,16 @@ class SearchDock(QDockWidget):
         self.quota.setReadOnly(True)
         self.quota.setFrame(False)
         self.quota.setAccessibleName("Використання та залишок квоти")
-        layout.addWidget(self.quota)
+        self.pages = {}
+        for operation, title in zip(OPERATIONS[1:], TITLES[1:]):
+            page = FunctionPage(operation, title)
+            self.pages[operation] = page
+            self.tabs.addTab(page, title)
+        self.footer = QHBoxLayout()
+        self.footer.addWidget(self.quota, 1)
+        self.footer.addWidget(self.settings_button)
+        self.footer.addWidget(self.help_button)
+        outer.addLayout(self.footer)
         self.setWidget(body)
         self.search_button.clicked.connect(self.submit)
         self.query.returnPressed.connect(self.submit)

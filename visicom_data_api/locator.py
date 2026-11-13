@@ -16,7 +16,7 @@ class AddressLocatorFilter(QgsLocatorFilter):
         self.setFetchResultsDelay(1000)
 
     def name(self):
-        return "ua_address_search"
+        return "visicom_data_api"
 
     def displayName(self):
         return "Адреси України (Visicom)"

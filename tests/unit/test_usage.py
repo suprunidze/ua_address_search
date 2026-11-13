@@ -3,8 +3,8 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from ua_address_search.core.usage import LocalUsage
-from ua_address_search.core.cache import SessionCache, namespace
+from visicom_data_api.core.usage import LocalUsage
+from visicom_data_api.core.cache import SessionCache, namespace
 
 
 class UsageTests(unittest.TestCase):

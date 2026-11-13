@@ -9,7 +9,7 @@ import xml.etree.ElementTree as ET
 import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = "ua_address_search"
+PLUGIN = "visicom_data_api"
 
 
 def version():
@@ -75,13 +75,14 @@ def build():
                     ):
                         raise RuntimeError("A local secret was found in the ZIP")
     root = ET.Element("plugins")
-    entry = ET.SubElement(root, "pyqgis_plugin", name="UA Address Search", version=version())
+    entry = ET.SubElement(
+        root, "pyqgis_plugin", name="Visicom Data API for QGIS", version=version())
     for key, value in {
-        "description": "Пошук адрес України через Visicom",
+        "description": "Адреси, об’єкти, маршрути та Processing через Visicom Data API",
         "version": version(),
         "qgis_minimum_version": "3.28",
         "qgis_maximum_version": "4.99",
-        "author_name": "UA Address Search contributors",
+        "author_name": "Visicom Data API for QGIS contributors",
         "experimental": "True",
         "file_name": archive.name,
         "download_url": archive.name,

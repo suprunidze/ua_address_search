@@ -9,13 +9,9 @@ from urllib.parse import urlsplit
 from qgis.core import QgsApplication, QgsAuthMethodConfig, QgsSettings
 from qgis.PyQt.QtCore import QStandardPaths
 
-PREFIX = "ua_address_search/"
+PREFIX = "visicom_data_api/"
 DEFAULT_SERVER = "https://uaaddresssearch-production.up.railway.app"
 VISICOM_URL = "https://api.visicom.ua/data-api/5.0/uk"
-LOCATOR_PREFIX_KEYS = (
-    "gui/locator_filters/prefix_ua_address_search",
-    "locator-filters/items/ua_address_search/prefix",
-)
 
 
 def validate_url(value: str) -> str:
@@ -62,11 +58,6 @@ class Settings:
     def __init__(self):
         self.values = QgsSettings()
 
-    def migrate_locator_prefix(self) -> None:
-        for key in LOCATOR_PREFIX_KEYS:
-            if self.values.value(key, "") == "uas":
-                self.values.setValue(key, "адр")
-
     def url(self) -> str:
         return str(self.values.value(PREFIX + "server_url", DEFAULT_SERVER))
 
@@ -85,8 +76,9 @@ class Settings:
     def show_quota(self) -> bool:
         return self.values.value(PREFIX + "direct_show_quota", True, type=bool)
 
-    def credentials(self) -> Credentials:
-        direct = self.mode() == "visicom"
+    def credentials(self, own_key=False) -> Credentials:
+        """Processing requests own_key=True without changing the panel's mode."""
+        direct = own_key or self.mode() == "visicom"
         key = "visicom_authcfg" if direct else "authcfg"
         config_id = str(self.values.value(PREFIX + key, ""))
         if not config_id:
@@ -104,7 +96,7 @@ class Settings:
                 location = QStandardPaths.StandardLocation.GenericDataLocation
             path = (
                 Path(QStandardPaths.writableLocation(location))
-                / "UAAddressSearch"
+                / "VisicomDataApi"
                 / "usage.sqlite3"
             )
             return Credentials(
@@ -144,7 +136,7 @@ class Settings:
         config = QgsAuthMethodConfig()
         config.setMethod("Basic")
         config.setName(
-            "UA Address Search — " + ("Visicom" if key == "visicom_authcfg" else "Railway")
+            "Visicom Data API for QGIS — " + ("Visicom" if key == "visicom_authcfg" else "Railway")
         )
         config.setUri(url)
         config.setConfig("username", "uaas")

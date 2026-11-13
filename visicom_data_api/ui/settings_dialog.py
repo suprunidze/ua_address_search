@@ -20,7 +20,7 @@ class SettingsDialog(QDialog):
     def __init__(self, settings, parent=None, initial_mode=None):
         super().__init__(parent)
         self.settings = settings
-        self.setWindowTitle("UA Address Search — налаштування")
+        self.setWindowTitle("Visicom Data API for QGIS — налаштування")
         layout = QFormLayout(self)
         constraints = getattr(QLayout, "SizeConstraint", QLayout)
         layout.setSizeConstraint(constraints.SetNoConstraint)

@@ -11,7 +11,7 @@ try:
 except ImportError:
     from qgis.PyQt.QtWidgets import QAction
 from qgis.core import QgsApplication, QgsCsException
-from .core.client import NetworkClient, RequestTask
+from .core.client import ClientError, NetworkClient, RequestTask
 from .core.cache import SessionCache
 from .core.models import SearchResult
 from .core.settings import Credentials, Settings
@@ -20,9 +20,11 @@ from .map_tools import MapDisplay, ReverseMapTool, download_geometry
 from .ui.search_dock import SearchDock
 from .ui.settings_dialog import SettingsDialog
 from .ui.quota_dialog import QuotaDialog
+from .function_controller import FunctionController
+from .processing_provider import register_provider
 
 
-class AddressSearchPlugin:
+class VisicomDataApiPlugin:
     def __init__(self, iface):
         self.iface = iface
         self.settings = Settings()
@@ -40,6 +42,8 @@ class AddressSearchPlugin:
         self.cache = SessionCache()
         self.quota_dialog = None
         self.quota_notices = set()
+        self.functions = None
+        self.provider = None
 
     def initGui(self):
         if self.active:
@@ -70,17 +74,19 @@ class AddressSearchPlugin:
         self.dock.cancel_requested.connect(self.cancel)
         self.dock.help_requested.connect(self.show_help)
         icon = QIcon(str(Path(__file__).parent / "resources" / "icon.svg"))
-        self.action = QAction(icon, "UA Address Search", self.iface.mainWindow())
+        self.action = QAction(icon, "Visicom Data API for QGIS", self.iface.mainWindow())
         self.action.triggered.connect(self.open_panel)
         self.iface.addToolBarIcon(self.action)
-        self.iface.addPluginToMenu("UA Address Search", self.action)
+        self.iface.addPluginToMenu("Visicom Data API for QGIS", self.action)
         self.locator = AddressLocatorFilter(
             activate=self.locator_activate,
             credentials_provider=self.refresh_credentials,
             cache=self.cache,
         )
-        self.settings.migrate_locator_prefix()
         self.iface.registerLocatorFilter(self.locator)
+        self.provider = register_provider()
+        self.provider.usage_changed.connect(self.processing_usage_changed)
+        self.functions = FunctionController(self)
         # Unlock only when the user requests search; loading QGIS must never prompt.
         self.dock.visibilityChanged.connect(self.visibility_changed)
         self.dock.setVisible(self.settings.visible())
@@ -106,10 +112,15 @@ class AddressSearchPlugin:
 
     def show_help(self):
         path = Path(__file__).parent / "resources" / "help.html"
+        page = self.dock.tabs.currentWidget()
+        status = getattr(page, "status", self.dock.status)
         if not path.is_file():
-            self.dock.status.setText("Файл довідки відсутній. Перевстановіть плагін із ZIP.")
-        elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
-            self.dock.status.setText("Не вдалося відкрити довідку в браузері.")
+            status.setText("Файл довідки відсутній. Перевстановіть плагін із ZIP.")
+        else:
+            url = QUrl.fromLocalFile(str(path.resolve()))
+            url.setFragment(getattr(page, "operation", "addresses"))
+            if not QDesktopServices.openUrl(url):
+                status.setText("Не вдалося відкрити довідку в браузері.")
 
     def visibility_changed(self, visible):
         self.settings.set_visible(visible)
@@ -138,12 +149,15 @@ class AddressSearchPlugin:
         return credentials
 
     def configure(self, mode=None):
+        if self.functions is not None:
+            self.functions.cancel()
         self.cancel_tasks()
         dialog = SettingsDialog(self.settings, self.iface.mainWindow(), initial_mode=mode)
         run = getattr(dialog, "exec", None) or dialog.exec_
         if run():
             self.refresh_credentials()
-            self.select(self.dock.results.currentRow())
+            if self.dock.tabs.currentIndex() == 0:
+                self.select(self.dock.results.currentRow())
         dialog.deleteLater()
 
     def access_error(self, notice):
@@ -194,6 +208,8 @@ class AddressSearchPlugin:
         self.update_controls()
 
     def cancel(self, silent=False):
+        if self.functions is not None:
+            self.functions.cancel()
         pending = bool(self.tasks)
         active = (
             pending
@@ -371,6 +387,19 @@ class AddressSearchPlugin:
             )
         )
 
+    def processing_usage_changed(self):
+        """Refresh local usage on the GUI thread without switching access mode."""
+        if not self.active or self.settings.mode() != "visicom":
+            return
+        try:
+            credentials = self.settings.credentials(own_key=True)
+            if credentials.token:
+                self.cache.set_identity(credentials.identity)
+                self.cache.update_quota(
+                    credentials.identity, NetworkClient._local_quota(credentials, False))
+        except (ValueError, RuntimeError, ClientError):
+            return
+
     def show_geometry(self, index):
         if 0 <= index < len(self.records):
             self.start("feature", self.records[index].id)
@@ -426,6 +455,7 @@ class AddressSearchPlugin:
         if not self.active:
             return
         self.open_panel()
+        self.dock.tabs.setCurrentIndex(0)
         if data.get("error"):
             self.configure()
             return
@@ -445,6 +475,12 @@ class AddressSearchPlugin:
             return
         self.active = False
         self.cancel(silent=True)
+        if self.functions is not None:
+            self.functions.unload()
+            self.functions = None
+        if self.provider is not None:
+            QgsApplication.processingRegistry().removeProvider(self.provider)
+            self.provider = None
         self.cache.on_quota = None
         self.cache.on_error = None
         self.cache.close()
@@ -462,7 +498,7 @@ class AddressSearchPlugin:
             self.locator.activate = None
             self.iface.deregisterLocatorFilter(self.locator)
             self.locator = None
-        self.iface.removePluginMenu("UA Address Search", self.action)
+        self.iface.removePluginMenu("Visicom Data API for QGIS", self.action)
         self.iface.removeToolBarIcon(self.action)
         self.action.triggered.disconnect()
         self.action.deleteLater()

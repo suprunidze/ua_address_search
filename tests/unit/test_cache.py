@@ -2,7 +2,7 @@ from concurrent.futures import ThreadPoolExecutor
 import threading
 import time
 import unittest
-from ua_address_search.core.cache import CacheCancelled, SessionCache, namespace
+from visicom_data_api.core.cache import CacheCancelled, SessionCache, namespace
 
 
 class Feedback:

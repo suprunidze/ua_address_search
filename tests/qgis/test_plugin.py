@@ -25,21 +25,25 @@ from qgis.core import (
     QgsRectangle,
 )
 from qgis.gui import QgsMapCanvas, QgsMapToolPan, QgsLayerTreeMapCanvasBridge
-from ua_address_search import classFactory
-from ua_address_search.core.client import ClientError, NetworkClient, RequestTask
-from ua_address_search.core.cache import SessionCache
-from ua_address_search.core.models import SearchResult
-from ua_address_search.core.settings import (
+from visicom_data_api import classFactory
+from visicom_data_api.core.client import ClientError, NetworkClient, RequestTask
+from visicom_data_api.core.cache import SessionCache
+from visicom_data_api.core.models import SearchResult
+from visicom_data_api.core.settings import (
     Credentials,
     PREFIX,
     Settings,
     validate_url,
-    LOCATOR_PREFIX_KEYS,
 )
-from ua_address_search.locator import AddressLocatorFilter
-from ua_address_search.map_tools import MapDisplay, download_geometry
-from ua_address_search.ui.settings_dialog import SettingsDialog
-from ua_address_search.ui.quota_dialog import REGISTRATION_URL
+from visicom_data_api.locator import AddressLocatorFilter
+from visicom_data_api.map_tools import MapDisplay, download_geometry
+from visicom_data_api.ui.settings_dialog import SettingsDialog
+from visicom_data_api.ui.quota_dialog import REGISTRATION_URL
+
+LOCATOR_PREFIX_KEYS = (
+    "gui/locator_filters/prefix_visicom_data_api",
+    "locator-filters/items/visicom_data_api/prefix",
+)
 
 RECORD = SearchResult(
     "ADR_TEST",
@@ -362,16 +366,19 @@ class QgisTests(unittest.TestCase):
             [dock.reverse_button, dock.query, dock.search_button, dock.cancel_button],
         )
         self.assertEqual(
-            [dock.action_row.itemAt(i).widget() for i in (0, 1, 3, 4)],
-            [dock.download_button, dock.copy_button, dock.settings_button, dock.help_button],
+            [dock.action_row.itemAt(i).widget() for i in (0, 1)],
+            [dock.download_button, dock.copy_button],
         )
-        layout = dock.widget().layout()
+        self.assertEqual([dock.footer.itemAt(i).widget() for i in range(3)],
+                         [dock.quota, dock.settings_button, dock.help_button])
+        self.assertEqual(dock.tabs.count(), 6)
+        layout = dock.address_page.layout()
         self.assertEqual(layout.indexOf(dock.status) + 1, layout.indexOf(dock.auto_geometry))
         styles = getattr(Qt, "ToolButtonStyle", Qt)
         for button in (dock.download_button, dock.settings_button):
             self.assertEqual(button.toolButtonStyle(), styles.ToolButtonTextBesideIcon)
         self.assertEqual(dock.help_button.toolButtonStyle(), styles.ToolButtonIconOnly)
-        self.assertEqual(dock.help_button.accessibleName(), "Допомога")
+        self.assertEqual(dock.help_button.accessibleName(), "Довідка")
         self.assertFalse(dock.help_button.icon().isNull())
         self.assertTrue(dock.reverse_button.isCheckable())
         self.assertFalse(dock.reverse_button.isChecked())
@@ -379,7 +386,7 @@ class QgisTests(unittest.TestCase):
         self.plugin.show_record(RECORD)
         marker = self.plugin.display.marker
         with patch(
-            "ua_address_search.plugin.QDesktopServices.openUrl", return_value=True
+            "visicom_data_api.plugin.QDesktopServices.openUrl", return_value=True
         ) as open_url:
             dock.help_button.click()
             url = open_url.call_args[0][0]
@@ -389,11 +396,11 @@ class QgisTests(unittest.TestCase):
         self.assertEqual(self.iface.canvas.mapTool(), self.plugin.tool)
         self.assertIs(self.plugin.display.marker, marker)
         self.assertEqual(Handler.calls, [])
-        with patch("ua_address_search.plugin.QDesktopServices.openUrl", return_value=False):
+        with patch("visicom_data_api.plugin.QDesktopServices.openUrl", return_value=False):
             dock.help_button.click()
             self.assertIn("Не вдалося", dock.status.text())
-        with patch("ua_address_search.plugin.Path.is_file", return_value=False):
-            with patch("ua_address_search.plugin.QDesktopServices.openUrl") as open_url:
+        with patch("visicom_data_api.plugin.Path.is_file", return_value=False):
+            with patch("visicom_data_api.plugin.QDesktopServices.openUrl") as open_url:
                 dock.help_button.click()
                 open_url.assert_not_called()
                 self.assertIn("відсутній", dock.status.text())
@@ -562,7 +569,7 @@ class QgisTests(unittest.TestCase):
                 self.assertEqual(len(Handler.calls), 2)
                 self.assertEqual(next(iter(project.mapLayers().values())).featureCount(), 1)
                 with patch(
-                    "ua_address_search.plugin.download_geometry",
+                    "visicom_data_api.plugin.download_geometry",
                     side_effect=ValueError("test failure"),
                 ):
                     self.plugin.download_selected(0)
@@ -602,7 +609,7 @@ class QgisTests(unittest.TestCase):
         credentials = Credentials(self.url + "/denied", "synthetic-token")
         with patch.object(Settings, "credentials", return_value=credentials):
             with patch(
-                "ua_address_search.ui.quota_dialog.QDesktopServices.openUrl", return_value=True
+                "visicom_data_api.ui.quota_dialog.QDesktopServices.openUrl", return_value=True
             ) as browser:
                 for operation, value in (
                     ("search", "Київ"),
@@ -947,14 +954,14 @@ class QgisTests(unittest.TestCase):
         self.plugin.initGui()
         self.assertEqual(self.plugin.locator.activePrefix(), "custom")
 
-    def test_old_default_prefix_migrates_without_setting_password(self):
+    def test_new_plugin_does_not_migrate_custom_locator_prefix(self):
         for key in LOCATOR_PREFIX_KEYS:
             QgsSettings().setValue(key, "uas")
         self.plugin = classFactory(self.iface)
         self.plugin.initGui()
-        self.assertEqual(self.plugin.locator.activePrefix(), "адр")
+        self.assertEqual(self.plugin.locator.activePrefix(), "uas")
         for key in LOCATOR_PREFIX_KEYS:
-            self.assertEqual(QgsSettings().value(key), "адр")
+            self.assertEqual(QgsSettings().value(key), "uas")
 
     def test_repeated_pending_panel_query_does_not_cancel_its_request(self):
         self.plugin = classFactory(self.iface)
@@ -1162,7 +1169,7 @@ class QgisTests(unittest.TestCase):
                 Credentials(self.url, "synthetic-token"), "feature", RECORD.id, feedback
             )
         self.assertLess(time.monotonic() - started, 2)
-        with patch("ua_address_search.core.client.REQUEST_TIMEOUT_MS", 30):
+        with patch("visicom_data_api.core.client.REQUEST_TIMEOUT_MS", 30):
             with self.assertRaises(ClientError):
                 NetworkClient().request(
                     Credentials(self.url + "/slow", "synthetic-token"), "search", "Київ"

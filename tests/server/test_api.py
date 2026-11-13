@@ -95,13 +95,13 @@ class APITests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.post("/v1/search", json={"text": "Київ"}, headers=self.headers)
         self.assertEqual(response.status_code, 429)
         self.assertEqual(response.json()["error"]["code"], "daily_quota")
-        response = await self.client.post("/v1/search", content=b"x" * 5000, headers=self.headers)
+        response = await self.client.post("/v1/search", content=b"x" * 65537, headers=self.headers)
         self.assertEqual(response.status_code, 413)
 
     async def test_chunked_request_size(self):
         async def stream():
-            yield b"x" * 3000
-            yield b"y" * 3000
+            yield b"x" * 40000
+            yield b"y" * 40000
 
         response = await self.client.post("/v1/search", content=stream(), headers=self.headers)
         self.assertEqual(response.status_code, 413)

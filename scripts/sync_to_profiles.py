@@ -9,9 +9,10 @@ import shutil
 import subprocess
 import tempfile
 import zipfile
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-PLUGIN = "ua_address_search"
+PLUGIN = "visicom_data_api"
 
 
 def running_qgis():
@@ -35,7 +36,36 @@ def manifest(directory):
     }
 
 
-def sync(allow_running=False):
+def retire_old_plugin(profile, parent):
+    """One-time rename cleanup, outside the importable plugins tree, with rollback copy."""
+    old = parent / "ua_address_search"
+    if not old.exists():
+        return None
+    if (
+        old.is_symlink()
+        or old.resolve().parent != parent.resolve()
+        or any(p.is_symlink() for p in old.rglob("*"))
+    ):
+        raise RuntimeError("Refusing a redirected old plugin tree")
+    backups = profile / "python" / "visicom_plugin_backups"
+    if backups.is_symlink() or backups.resolve().parent != parent.resolve().parent:
+        raise RuntimeError("Unsafe old-plugin backup directory")
+    backups.mkdir(exist_ok=True)
+    destination = backups / ("ua_address_search-" + uuid.uuid4().hex)
+    if destination.resolve().parent != backups.resolve():
+        raise RuntimeError("Unsafe old-plugin backup destination")
+    before = manifest(old)
+    old.rename(destination)
+    if manifest(destination) != before:
+        destination.rename(old)
+        raise RuntimeError("Old-plugin backup failed SHA-256 verification")
+    print(f"Retired old plugin in {profile.name}; rollback backup: {destination}")
+    return str(destination)
+
+
+def sync(allow_running=False, remove_old=False):
+    if remove_old and running_qgis():
+        raise RuntimeError("Close all QGIS instances before retiring the old plugin")
     if running_qgis() and not allow_running:
         raise RuntimeError("QGIS is running; close it or explicitly pass --allow-running-qgis")
     archive = ROOT / "dist" / (PLUGIN + ".zip")
@@ -43,6 +73,7 @@ def sync(allow_running=False):
         raise RuntimeError("Build the ZIP first")
     base = Path(os.environ.get("APPDATA", str(Path.home() / ".local/share"))) / "QGIS"
     targets = []
+    backups = []
     with zipfile.ZipFile(archive) as release:
         for info in release.infolist():
             parts = Path(info.filename).parts
@@ -96,9 +127,17 @@ def sync(allow_running=False):
                         raise
                 targets.append(str(target))
                 print(f"Synchronized {generation}/{profile.name}; SHA-256 manifest verified")
+                if remove_old:
+                    if running_qgis():
+                        raise RuntimeError("QGIS started; old-plugin retirement stopped")
+                    backup_path = retire_old_plugin(profile, parent)
+                    if backup_path:
+                        backups.append(backup_path)
     report = ROOT / "artifacts" / "profile_sync.json"
     report.parent.mkdir(exist_ok=True)
-    report.write_text(json.dumps({"targets": targets}, indent=2), encoding="utf-8")
+    report.write_text(
+        json.dumps({"targets": targets, "old_plugin_backups": backups}, indent=2), encoding="utf-8"
+    )
     if not targets:
         print("No existing QGIS3/QGIS4 profiles were found.")
     return targets
@@ -107,4 +146,10 @@ def sync(allow_running=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--allow-running-qgis", action="store_true")
-    sync(parser.parse_args().allow_running_qgis)
+    parser.add_argument(
+        "--remove-old-plugin",
+        action="store_true",
+        help="One-time rename cleanup; requires QGIS to be closed",
+    )
+    args = parser.parse_args()
+    sync(args.allow_running_qgis, args.remove_old_plugin)

@@ -33,9 +33,9 @@ def main():
         QCoreApplication.setApplicationName("UAAS-Isolated-Test")
         app.initQgis()
         try:
-            import ua_address_search
+            import visicom_data_api
 
-            actual = Path(ua_address_search.__file__).resolve().parent.parent
+            actual = Path(visicom_data_api.__file__).resolve().parent.parent
             if actual != args.plugin_parent.resolve():
                 raise RuntimeError("The wrong plugin copy was imported")
             if args.test_name:

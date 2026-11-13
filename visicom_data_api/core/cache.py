@@ -96,6 +96,9 @@ class SessionCache:
             value = normalize_text(value)
         elif operation == "reverse":
             value = tuple(value)
+        elif isinstance(value, (dict, list)):
+            # Canonical JSON includes all parameters while retaining point order.
+            value = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
         return identity, operation, value
 
     def peek(self, identity, operation, value):

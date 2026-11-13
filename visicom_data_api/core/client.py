@@ -19,6 +19,9 @@ from .models import InvalidProviderData, SearchResult, normalize
 from .cache import CacheCancelled
 from .settings import validate_url
 from .usage import LocalUsage
+from .operations import (
+    OPERATIONS, PATHS, normalize_response, upstream_request, validate_request, validate_result,
+)
 
 REQUEST_TIMEOUT_MS = 18000
 MAX_RESPONSE_BYTES = 5_000_000
@@ -55,6 +58,11 @@ class NetworkClient:
 
     def request(self, credentials, operation, value=None, feedback=None):
         feedback = feedback or QgsFeedback()
+        if operation in OPERATIONS:
+            try:
+                value = validate_request(operation, value)
+            except ValueError as exc:
+                raise ClientError(str(exc)) from None
         if self.cache is None or operation == "quota":
             self.last_source = "network"
             return self._request(credentials, operation, value, feedback)
@@ -63,7 +71,7 @@ class NetworkClient:
 
         def load(shared_feedback):
             records = self._request(credentials, operation, value, shared_feedback)
-            return [record.to_dict() for record in records]
+            return records if operation in OPERATIONS else [record.to_dict() for record in records]
 
         try:
             data, self.last_source = self.cache.resolve(
@@ -85,9 +93,11 @@ class NetworkClient:
                 self.update_quota(credentials, self._local_quota(credentials, False))
             QgsMessageLog.logMessage(
                 "Кеш сесії: " + operation + " (" + self.last_source + ")",
-                "UA Address Search",
+                "Visicom Data API for QGIS",
                 Qgis.MessageLevel.Info,
             )
+        if operation in OPERATIONS:
+            return data
         return [SearchResult.from_dict(record) for record in data]
 
     def update_quota(self, credentials, quota):
@@ -142,6 +152,8 @@ class NetworkClient:
             path, body = "/v1/features/" + quote(value, safe=""), None
         elif operation == "quota":
             path, body = "/v1/quota", None
+        elif operation in OPERATIONS:
+            path, body = PATHS[operation], value
         else:
             raise ClientError("Невідома операція.")
         payload = self._transport(credentials, base + path, body, feedback)
@@ -149,16 +161,25 @@ class NetworkClient:
             self.update_quota(credentials, payload)
             return payload
         try:
+            if operation in OPERATIONS:
+                return validate_result(operation, payload["result"], value)
             records = payload["results"]
             if not isinstance(records, list):
                 raise InvalidProviderData("Expected result list")
             return [SearchResult.from_dict(record) for record in records]
-        except (KeyError, TypeError, ValueError):
+        except (KeyError, TypeError, ValueError, AttributeError):
             raise ClientError("Сервер повернув некоректні результати.") from None
 
     def _direct(self, credentials, operation, value, feedback):
         params = {"key": credentials.token}
-        if operation == "search":
+        base = credentials.url
+        if operation in OPERATIONS:
+            branch, resource, arguments = upstream_request(operation, value)
+            # Both language and core branches use the configured origin, including test servers.
+            base = credentials.url.rsplit("/", 1)[0] + "/" + branch
+            path = "/" + resource
+            params.update(arguments)
+        elif operation == "search":
             path = "/geocode.json"
             params.update(
                 text=value,
@@ -186,14 +207,15 @@ class NetworkClient:
             raise ClientError("Невідома операція.")
         payload = self._transport(
             credentials,
-            credentials.url + path + "?" + urlencode(params),
+            base + path + "?" + urlencode(params),
             None,
             feedback,
             direct=True,
         )
         try:
-            return normalize(payload)
-        except InvalidProviderData:
+            return (normalize_response(operation, payload, value)
+                    if operation in OPERATIONS else normalize(payload))
+        except (ValueError, TypeError, KeyError, AttributeError):
             raise ClientError("Visicom повернув некоректні результати.") from None
 
     @staticmethod
@@ -327,7 +349,7 @@ class RequestTask(QgsTask):
         flag = getattr(QgsTask, "CanCancel", None)
         if flag is None:
             flag = QgsTask.Flag.CanCancel
-        super().__init__("UA Address Search", flag)
+        super().__init__("Visicom Data API for QGIS", flag)
         self.credentials = credentials
         self.operation = operation
         self.value = value

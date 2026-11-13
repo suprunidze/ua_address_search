@@ -1,7 +1,13 @@
-# Структура UA Address Search
+# Структура Visicom Data API for QGIS
 
 ## Плагін
-- `ua_address_search/__init__.py`: QGIS classFactory; `plugin.py`: життєвий цикл,
+- `visicom_data_api/core/operations.py`: спільні контракти, ліміти, параметри запитів
+  і нормалізація результатів шести додаткових операцій без залежності від QGIS.
+- `core/qgis_io.py`: CRS, порядок точок, стандартні поля й розділення виходів за геометрією.
+- `ui/function_tabs.py`: п’ять нових сторінок, редактор упорядкованих точок.
+- `function_controller.py`: задачі, перемикання вкладок, вибір на карті й результати.
+- `processing_provider.py`: провайдер visicom_data_api та вісім алгоритмів лише з власним ключем.
+- `visicom_data_api/__init__.py`: QGIS classFactory; `plugin.py`: життєвий цикл,
   задачі, панель, Locator і відображення результатів.
 - `core/models.py`: незалежні від QGIS моделі, нормалізація Visicom та перевірка WGS84.
 - `core/cache.py`: спільний кеш сесії 128 МіБ, LRU, об’єднання запитів та скасування.

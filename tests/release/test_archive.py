@@ -16,9 +16,9 @@ class ReleaseTests(unittest.TestCase):
                 if tag in ("script", "link", "img", "iframe", "object"):
                     raise AssertionError("Help must not load external resources")
 
-        with zipfile.ZipFile(ROOT / "dist/ua_address_search.zip") as archive:
-            content = archive.read("ua_address_search/resources/help.html")
-            self.assertEqual(content, (ROOT / "ua_address_search/resources/help.html").read_bytes())
+        with zipfile.ZipFile(ROOT / "dist/visicom_data_api.zip") as archive:
+            content = archive.read("visicom_data_api/resources/help.html")
+            self.assertEqual(content, (ROOT / "visicom_data_api/resources/help.html").read_bytes())
             html = content.decode("utf-8")
             self.assertIn('lang="uk"', html)
             self.assertIn("Найближча адреса", html)
@@ -32,7 +32,7 @@ class ReleaseTests(unittest.TestCase):
     def test_archive_is_exact_runtime_and_mit(self):
         from scripts.package_plugin import runtime_files
 
-        with zipfile.ZipFile(ROOT / "dist/ua_address_search.zip") as archive:
+        with zipfile.ZipFile(ROOT / "dist/visicom_data_api.zip") as archive:
             expected = {
                 p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
                 for p in runtime_files()
@@ -42,9 +42,9 @@ class ReleaseTests(unittest.TestCase):
             }
             self.assertEqual(actual, expected)
             self.assertEqual(
-                archive.read("ua_address_search/LICENSE"), (ROOT / "LICENSE").read_bytes()
+                archive.read("visicom_data_api/LICENSE"), (ROOT / "LICENSE").read_bytes()
             )
-            self.assertIn(b"MIT License", archive.read("ua_address_search/LICENSE"))
+            self.assertIn(b"MIT License", archive.read("visicom_data_api/LICENSE"))
             for name in archive.namelist():
                 self.assertFalse(
                     any(
@@ -55,9 +55,9 @@ class ReleaseTests(unittest.TestCase):
 
     def test_manifest_versions_match(self):
         metadata = configparser.ConfigParser()
-        metadata.read(ROOT / "ua_address_search/metadata.txt", encoding="utf-8")
+        metadata.read(ROOT / "visicom_data_api/metadata.txt", encoding="utf-8")
         version = metadata["general"]["version"]
         entry = ET.parse(ROOT / "dist/plugins.xml").getroot().find("pyqgis_plugin")
         self.assertEqual(entry.attrib["version"], version)
         self.assertEqual(entry.findtext("version"), version)
-        self.assertEqual(entry.findtext("file_name"), "ua_address_search.zip")
+        self.assertEqual(entry.findtext("file_name"), "visicom_data_api.zip")
