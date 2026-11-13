@@ -3,8 +3,8 @@
 from pathlib import Path
 from dataclasses import replace
 from qgis.PyQt import sip
-from qgis.PyQt.QtCore import Qt
-from qgis.PyQt.QtGui import QIcon
+from qgis.PyQt.QtCore import Qt, QUrl
+from qgis.PyQt.QtGui import QIcon, QDesktopServices
 
 try:
     from qgis.PyQt.QtGui import QAction
@@ -53,15 +53,17 @@ class AddressSearchPlugin:
         if right is None:
             right = Qt.DockWidgetArea.RightDockWidgetArea
         self.iface.addDockWidget(right, self.dock)
-        self.display = MapDisplay(self.iface.mapCanvas())
+        self.display = MapDisplay(self.iface.mapCanvas(), self.update_controls)
         self.tool = ReverseMapTool(self.iface.mapCanvas())
         self.tool.coordinates_selected.connect(self.reverse_at)
+        self.iface.mapCanvas().mapToolSet.connect(self.map_tool_changed)
         self.dock.search_requested.connect(self.search)
         self.dock.selection_requested.connect(self.select)
         self.dock.download_requested.connect(self.download_selected)
-        self.dock.reverse_requested.connect(self.activate_reverse)
+        self.dock.reverse_requested.connect(self.set_reverse_enabled)
         self.dock.settings_requested.connect(self.configure)
         self.dock.cancel_requested.connect(self.cancel)
+        self.dock.help_requested.connect(self.show_help)
         icon = QIcon(str(Path(__file__).parent / "resources" / "icon.svg"))
         self.action = QAction(icon, "UA Address Search", self.iface.mainWindow())
         self.action.triggered.connect(self.open_panel)
@@ -77,6 +79,32 @@ class AddressSearchPlugin:
         # Unlock only when the user requests search; loading QGIS must never prompt.
         self.dock.visibilityChanged.connect(self.visibility_changed)
         self.dock.setVisible(self.settings.visible())
+        self.update_controls()
+
+    def update_controls(self):
+        if self.dock is None:
+            return
+        reverse = self.tool is not None and self.iface.mapCanvas().mapTool() == self.tool
+        self.dock.set_reverse_active(reverse)
+        self.dock.cancel_button.setEnabled(
+            bool(self.tasks)
+            or reverse
+            or (self.display is not None and self.display.has_overlays())
+        )
+
+    def map_tool_changed(self, current, previous):
+        if not self.active:
+            return
+        if current != self.tool:
+            self.previous_tool = None
+        self.update_controls()
+
+    def show_help(self):
+        path = Path(__file__).parent / "resources" / "help.html"
+        if not path.is_file():
+            self.dock.status.setText("Файл довідки відсутній. Перевстановіть плагін із ZIP.")
+        elif not QDesktopServices.openUrl(QUrl.fromLocalFile(str(path.resolve()))):
+            self.dock.status.setText("Не вдалося відкрити довідку в браузері.")
 
     def visibility_changed(self, visible):
         self.settings.set_visible(visible)
@@ -105,7 +133,7 @@ class AddressSearchPlugin:
         return credentials
 
     def configure(self):
-        self.cancel(silent=True)
+        self.cancel_tasks()
         dialog = SettingsDialog(self.settings, self.iface.mainWindow())
         run = getattr(dialog, "exec", None) or dialog.exec_
         if run():
@@ -129,20 +157,26 @@ class AddressSearchPlugin:
                 task.callback = None
                 task.cancel()
                 self.tasks.discard(task)
-        if self.dock is not None:
-            self.dock.busy(bool(self.tasks))
+        self.update_controls()
 
     def cancel(self, silent=False):
-        active = bool(self.tasks) or (
-            self.tool is not None and self.iface.mapCanvas().mapTool() == self.tool
+        pending = bool(self.tasks)
+        active = (
+            pending
+            or (self.display is not None and self.display.has_overlays())
+            or (self.tool is not None and self.iface.mapCanvas().mapTool() == self.tool)
         )
         self.cancel_tasks()
         if self.tool is not None:
             self.restore_tool()
+        if self.display is not None:
+            self.display.clear()
         if self.dock is not None:
-            self.dock.busy(False)
+            self.update_controls()
             if active and not silent:
-                self.dock.status.setText("Запит скасовано.")
+                self.dock.status.setText(
+                    "Запит скасовано." if pending else "Підсвічування очищено."
+                )
 
     def start(self, operation, value=None, download=False):
         credentials = self.refresh_credentials()
@@ -171,9 +205,8 @@ class AddressSearchPlugin:
             )
             if keep_geometry:
                 self.cancel_tasks("search")
-                self.restore_tool()
             else:
-                self.cancel(silent=True)
+                self.cancel_tasks()
         if not credentials.url or not credentials.token:
             if credentials.url:
                 self.dock.status.setText(
@@ -181,7 +214,6 @@ class AddressSearchPlugin:
                 )
             return
         generation = self.generations[channel]
-        self.dock.busy(True)
         if operation != "feature":
             self.dock.status.setText("Пошук…")
 
@@ -189,7 +221,7 @@ class AddressSearchPlugin:
             self.tasks.discard(task)
             if not self.active or generation != self.generations[channel]:
                 return
-            self.dock.busy(bool(self.tasks))
+            self.update_controls()
             self.update_quota()
             if task.error:
                 self.dock.status.setText(task.error)
@@ -230,6 +262,7 @@ class AddressSearchPlugin:
         task.download_requested = download
         task.channel = channel
         self.tasks.add(task)
+        self.update_controls()
         QgsApplication.taskManager().addTask(task)
 
     def select(self, index):
@@ -310,12 +343,21 @@ class AddressSearchPlugin:
         if canvas.mapTool() != self.tool:
             self.previous_tool = canvas.mapTool()
             canvas.setMapTool(self.tool)
-        self.dock.cancel_button.setEnabled(True)
+        self.update_controls()
         self.dock.status.setText("Клацніть на карті: найближча адреса в радіусі 50 м.")
+
+    def set_reverse_enabled(self, enabled):
+        if enabled:
+            self.activate_reverse()
+        else:
+            self.restore_tool()
+            self.update_controls()
 
     def restore_tool(self):
         previous_tool = self.previous_tool
         self.previous_tool = None
+        if self.dock is not None:
+            self.dock.set_reverse_active(False)
         canvas = self.iface.mapCanvas()
         if self.tool is None or canvas.mapTool() != self.tool:
             return
@@ -337,7 +379,6 @@ class AddressSearchPlugin:
         except QgsCsException:
             self.dock.status.setText("Не вдалося перетворити координати кліку у WGS84.")
             return
-        self.restore_tool()
         self.start("reverse", coordinates)
 
     def locator_activate(self, data):
@@ -352,7 +393,7 @@ class AddressSearchPlugin:
         except ValueError:
             self.dock.status.setText("Некоректний результат Locator.")
             return
-        self.cancel(silent=True)
+        self.cancel_tasks()
         self.records = [record]
         self.dock.show_results(self.records)
         self.result_status = self.dock.status.text()
@@ -366,7 +407,9 @@ class AddressSearchPlugin:
         self.cache.on_quota = None
         self.cache.close()
         self.restore_tool()
+        self.display.on_change = None
         self.display.clear()
+        self.iface.mapCanvas().mapToolSet.disconnect(self.map_tool_changed)
         if self.locator is not None:
             self.locator.activate = None
             self.iface.deregisterLocatorFilter(self.locator)

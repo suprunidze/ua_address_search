@@ -9,7 +9,8 @@ import time
 import unittest
 from unittest.mock import patch
 from qgis.PyQt import sip
-from qgis.PyQt.QtCore import QCoreApplication, QEvent
+from qgis.PyQt.QtCore import QCoreApplication, QEvent, Qt
+from qgis.PyQt.QtGui import QFont
 from qgis.PyQt.QtWidgets import QApplication, QMainWindow
 from qgis.core import (
     QgsApplication,
@@ -36,6 +37,7 @@ from ua_address_search.core.settings import (
 )
 from ua_address_search.locator import AddressLocatorFilter
 from ua_address_search.map_tools import MapDisplay, download_geometry
+from ua_address_search.ui.settings_dialog import SettingsDialog
 
 RECORD = SearchResult(
     "ADR_TEST",
@@ -252,10 +254,13 @@ class QgisTests(unittest.TestCase):
         ):
             self.plugin.reverse_at(QgsPointXY(30.5234, 50.4501))
             self.assertTrue(wait_until(lambda: not self.plugin.tasks))
-        self.assertIsNone(self.plugin.previous_tool)
-        self.assertNotEqual(self.iface.canvas.mapTool(), self.plugin.tool)
+        self.assertIs(self.plugin.previous_tool, previous)
+        self.assertEqual(self.iface.canvas.mapTool(), self.plugin.tool)
         self.assertEqual(sum(path == "/v1/reverse" for path, _, _ in Handler.calls), 1)
         self.assertIsNotNone(self.plugin.display.marker)
+        self.plugin.set_reverse_enabled(False)
+        self.assertIsNone(self.plugin.previous_tool)
+        self.assertNotEqual(self.iface.canvas.mapTool(), self.plugin.tool)
 
     def test_deleted_previous_tool_cancel_hide_and_unload(self):
         self.plugin = classFactory(self.iface)
@@ -325,6 +330,159 @@ class QgisTests(unittest.TestCase):
                 self.plugin.restore_tool()
         self.assertIsNone(self.plugin.previous_tool)
         self.assertFalse(sip.isdeleted(previous))
+
+    def test_panel_order_labels_and_help_keeps_map_state(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        dock = self.plugin.dock
+        self.assertEqual(
+            [dock.search_row.itemAt(i).widget() for i in range(4)],
+            [dock.reverse_button, dock.query, dock.search_button, dock.cancel_button],
+        )
+        self.assertEqual(
+            [dock.action_row.itemAt(i).widget() for i in (0, 1, 3, 4)],
+            [dock.download_button, dock.copy_button, dock.settings_button, dock.help_button],
+        )
+        layout = dock.widget().layout()
+        self.assertEqual(layout.indexOf(dock.status) + 1, layout.indexOf(dock.auto_geometry))
+        styles = getattr(Qt, "ToolButtonStyle", Qt)
+        for button in (dock.download_button, dock.settings_button):
+            self.assertEqual(button.toolButtonStyle(), styles.ToolButtonTextBesideIcon)
+        self.assertEqual(dock.help_button.toolButtonStyle(), styles.ToolButtonIconOnly)
+        self.assertEqual(dock.help_button.accessibleName(), "Допомога")
+        self.assertFalse(dock.help_button.icon().isNull())
+        self.assertTrue(dock.reverse_button.isCheckable())
+        self.assertFalse(dock.reverse_button.isChecked())
+        self.plugin.activate_reverse()
+        self.plugin.show_record(RECORD)
+        marker = self.plugin.display.marker
+        with patch(
+            "ua_address_search.plugin.QDesktopServices.openUrl", return_value=True
+        ) as open_url:
+            dock.help_button.click()
+            url = open_url.call_args[0][0]
+            self.assertTrue(url.isLocalFile())
+            self.assertTrue(Path(url.toLocalFile()).is_file())
+            self.assertEqual(Path(url.toLocalFile()).name, "help.html")
+        self.assertEqual(self.iface.canvas.mapTool(), self.plugin.tool)
+        self.assertIs(self.plugin.display.marker, marker)
+        self.assertEqual(Handler.calls, [])
+        with patch("ua_address_search.plugin.QDesktopServices.openUrl", return_value=False):
+            dock.help_button.click()
+            self.assertIn("Не вдалося", dock.status.text())
+        with patch("ua_address_search.plugin.Path.is_file", return_value=False):
+            with patch("ua_address_search.plugin.QDesktopServices.openUrl") as open_url:
+                dock.help_button.click()
+                open_url.assert_not_called()
+                self.assertIn("відсутній", dock.status.text())
+
+    def test_reverse_toggle_repeated_clicks_and_other_tool(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        self.iface.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
+        previous = QgsMapToolPan(self.iface.canvas)
+        self.iface.canvas.setMapTool(previous)
+        button = self.plugin.dock.reverse_button
+        with patch.object(
+            Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
+        ):
+            button.click()
+            self.assertTrue(button.isChecked())
+            for point in (QgsPointXY(30, 50), QgsPointXY(31, 51)):
+                self.plugin.reverse_at(point)
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                self.assertTrue(button.isChecked())
+                self.assertEqual(self.iface.canvas.mapTool(), self.plugin.tool)
+            self.plugin.search("Київ")
+            self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+            self.assertTrue(button.isChecked())
+        self.assertEqual(sum(path == "/v1/reverse" for path, _, _ in Handler.calls), 2)
+        button.click()
+        self.assertIs(self.iface.canvas.mapTool(), previous)
+        self.assertFalse(button.isChecked())
+        button.click()
+        selected = QgsMapToolPan(self.iface.canvas)
+        self.iface.canvas.setMapTool(selected)
+        self.assertFalse(button.isChecked())
+        self.plugin.cancel()
+        self.assertIs(self.iface.canvas.mapTool(), selected)
+
+    def test_cancel_clears_only_own_overlays_and_keeps_cache_and_layers(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        other = MapDisplay(self.iface.canvas)
+        other.show(RECORD)
+        try:
+            with patch.object(
+                Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
+            ):
+                self.plugin.search("Київ")
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                self.plugin.download_selected(0)
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                layers = list(QgsProject.instance().mapLayers().values())
+                self.assertTrue(self.plugin.dock.cancel_button.isEnabled())
+                self.assertTrue(self.plugin.display.flashes)
+                calls = len(Handler.calls)
+                self.plugin.cancel()
+                self.assertFalse(self.plugin.display.has_overlays())
+                self.assertFalse(self.plugin.dock.cancel_button.isEnabled())
+                self.assertEqual(self.plugin.records, [RECORD])
+                self.assertEqual(layers[0].featureCount(), 1)
+                self.assertIsNotNone(other.marker)
+                for geometry in (
+                    {"type": "Point", "coordinates": [30, 50]},
+                    {"type": "LineString", "coordinates": [[30, 50], [31, 51]]},
+                    {"type": "Polygon", "coordinates": [[[30, 50], [31, 50], [31, 51], [30, 50]]]},
+                ):
+                    self.plugin.show_record(replace(RECORD, geometry=geometry), cached=False)
+                    self.assertIsNotNone(self.plugin.display.band)
+                    self.plugin.cancel()
+                    self.assertFalse(self.plugin.display.has_overlays())
+                    self.assertIsNotNone(other.marker)
+                self.assertTrue(wait_until(lambda: not other.flashes, seconds=3))
+                self.assertFalse(self.plugin.display.has_overlays())
+                self.plugin.search("КИЇВ")
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                self.assertEqual(len(Handler.calls), calls)
+                self.assertIsNotNone(self.plugin.display.band)
+                self.plugin.cancel()
+                self.plugin.search("Повільний пошук")
+                self.plugin.cancel()
+                self.assertTrue(
+                    wait_until(lambda: QgsApplication.taskManager().countActiveTasks() == 0)
+                )
+                self.assertFalse(self.plugin.display.has_overlays())
+        finally:
+            other.clear()
+
+    def test_settings_adapt_to_visible_rows_and_larger_font(self):
+        dialog = SettingsDialog(Settings(), self.iface.window)
+        try:
+            dialog.show()
+            events()
+            railway_size = dialog.size()
+            self.assertTrue(dialog.size().expandedTo(dialog.minimumSize()) == dialog.size())
+            dialog.mode.setCurrentIndex(1)
+            events()
+            self.assertTrue(dialog.direct.isVisible())
+            self.assertGreater(dialog.height(), railway_size.height())
+            font = QFont(dialog.font())
+            font.setPointSize(16)
+            dialog.setFont(font)
+            events()
+            self.assertGreaterEqual(dialog.width(), dialog.minimumSizeHint().width())
+            for widget in (dialog.mode, dialog.key, dialog.show_quota, dialog.limit):
+                self.assertTrue(widget.isVisible())
+                self.assertGreaterEqual(widget.height(), widget.minimumSizeHint().height())
+            larger = dialog.height()
+            dialog.mode.setCurrentIndex(0)
+            events()
+            self.assertLess(dialog.height(), larger)
+        finally:
+            dialog.close()
+            dialog.deleteLater()
+            events()
 
     def test_encrypted_settings_and_url_validation(self):
         manager = QgsApplication.authManager()
@@ -475,7 +633,9 @@ class QgisTests(unittest.TestCase):
         with patch.object(
             Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
         ):
-            with patch.object(self.iface.canvas, "flashGeometries") as flash:
+            with patch.object(
+                self.plugin.display, "flash", wraps=self.plugin.display.flash
+            ) as flash:
                 self.plugin.search("Київ")
                 self.assertTrue(wait_until(lambda: not self.plugin.tasks))
                 self.assertIsNotNone(self.plugin.display.marker)

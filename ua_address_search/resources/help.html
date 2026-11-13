@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>UA Address Search — довідка</title>
+  <style>
+    :root { color-scheme: light dark; --bg:#f4f6fa; --paper:#fff; --ink:#172b42;
+      --muted:#50647a; --line:#d8e1eb; --accent:#1268a4; --soft:#edf5fc; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:var(--bg); color:var(--ink);
+      font:16px/1.65 system-ui,-apple-system,"Segoe UI",sans-serif; }
+    main { max-width:960px; margin:auto; padding:40px 24px; }
+    header { padding:8px 0 24px; }
+    .eyebrow { color:var(--accent); font-size:.82rem; font-weight:700; letter-spacing:.08em; }
+    h1 { font-size:clamp(1.8rem,5vw,2.6rem); line-height:1.2; margin:10px 0 16px; }
+    h2 { font-size:1.3rem; line-height:1.35; margin:0 0 16px; }
+    h3 { font-size:1rem; margin:20px 0 8px; }
+    p { margin:8px 0 14px; }
+    a { color:var(--accent); text-underline-offset:3px; }
+    a:focus-visible { outline:3px solid var(--accent); outline-offset:4px; }
+    nav { display:flex; flex-wrap:wrap; gap:8px 18px; margin:20px 0 28px; }
+    section { background:var(--paper); border:1px solid var(--line); border-radius:12px;
+      padding:24px; margin-bottom:18px; scroll-margin-top:20px; }
+    li { margin:6px 0; }
+    code,kbd { background:var(--soft); padding:2px 6px; border-radius:4px; font-size:.9em; }
+    .note { border-left:3px solid var(--accent); background:var(--soft); padding:12px 16px; }
+    .table-wrap { overflow-x:auto; }
+    table { border-collapse:collapse; width:100%; text-align:left; }
+    th,td { padding:10px 12px; border-bottom:1px solid var(--line); vertical-align:top; }
+    th { color:var(--muted); font-weight:600; }
+    td:first-child { font-weight:600; min-width:160px; }
+    footer { color:var(--muted); font-size:.86rem; padding:8px 2px; }
+    @media (max-width:540px) { main { padding:24px 14px; } section { padding:18px; }
+      th,td { padding:8px; } }
+    @media (prefers-color-scheme:dark) { :root { --bg:#111c28; --paper:#192737;
+      --ink:#e6edf5; --muted:#afc0d1; --line:#35485d; --accent:#7cc6ff; --soft:#22384b; } }
+    @media print { body { background:#fff; color:#000; } nav { display:none; }
+      section { break-inside:avoid; border-color:#bbb; } a { color:inherit; } }
+  </style>
+</head>
+<body>
+<main>
+  <header>
+    <div class="eyebrow">ДОВІДКА · QGIS 3 / QGIS 4</div>
+    <h1>UA Address Search</h1>
+    <p>Пошук адрес, вулиць і населених пунктів України за даними Visicom.
+      Ця довідка входить до плагіна й відкривається без інтернету.</p>
+    <nav aria-label="Розділи довідки">
+      <a href="#start">Перший пошук</a><a href="#controls">Кнопки</a>
+      <a href="#geometry">Геометрія</a><a href="#access">Доступ і квоти</a>
+      <a href="#trouble">Якщо не працює</a><a href="#license">Ліцензія</a>
+    </nav>
+  </header>
+  <section id="start">
+    <h2>Перший пошук</h2>
+    <ol>
+      <li>Відкрийте панель UA Address Search через іконку плагіна.</li>
+      <li>У налаштуваннях виберіть спільний доступ Railway або введіть власний ключ Visicom.</li>
+      <li>Введіть адресу, наприклад <code>Київ, Хрещатик, 26</code>, і натисніть
+        <kbd>Enter</kbd> або «Знайти». Мінімум — три символи.</li>
+      <li>Перший результат вибирається автоматично. Карта показує його точку з flash;
+        натисніть інший результат, щоб перейти до нього.</li>
+    </ol>
+    <p>Також працює рядок пошуку QGIS (Locator): <code>адр Київ, Хрещатик, 26</code>.
+      Пошук починається після паузи 1 секунда. Без префікса плагін не виконує запитів.</p>
+  </section>
+  <section id="controls">
+    <h2>Кнопки панелі</h2>
+    <div class="table-wrap"><table>
+      <thead><tr><th scope="col">Кнопка</th><th scope="col">Дія</th></tr></thead>
+      <tbody>
+        <tr><td>Найближча адреса за кліком</td><td>Toggle перед полем пошуку. Коли ввімкнений,
+          кожен клік на карті шукає найближчу адресу в радіусі 50 м. Режим залишається
+          ввімкненим після відповіді. Повторне натискання повертає попередній інструмент.</td></tr>
+        <tr><td>Знайти</td><td>Пошук введеної адреси. Новий запит замінює попередній;
+          це не вимикає режим кліків.</td></tr>
+        <tr><td>Скасувати</td><td>Зупиняє запити, вимикає режим кліків, прибирає хрестик,
+          лінії, полігони та flash пошуку. Працює й після завершення запиту.</td></tr>
+        <tr><td>Завантажити геометрію</td><td>Додає вибраний об’єкт до тимчасового шару QGIS.
+          Один об’єкт не дублюється при повторному натисканні.</td></tr>
+        <tr><td>Копіювати адресу</td><td>Копіює текст вибраного рядка. Також доступні
+          контекстне меню та <kbd>Ctrl+C</kbd>, коли фокус у списку.</td></tr>
+        <tr><td>Налаштування</td><td>Вибір режиму доступу й локального обліку квоти власного ключа.</td></tr>
+        <tr><td>Допомога</td><td>Відкриває цю локальну сторінку в системному браузері.</td></tr>
+      </tbody>
+    </table></div>
+    <p class="note">Скасування залишає список результатів, кеш і завантажені шари.
+      Накладки інших плагінів не змінюються. Вибір іншого інструмента QGIS вимикає
+      режим кліків. Повторний клік по карті замінює попередній незавершений пошук.</p>
+  </section>
+  <section id="geometry">
+    <h2>Геометрія та кеш</h2>
+    <p>Чекбокс «Автоматично отримувати геометрію» зберігає свій стан. Якщо він увімкнений,
+      вибраний результат автоматично показується з повною геометрією; якщо вимкнений —
+      лише точка. Під час набору тексту в Locator геометрія не завантажується.</p>
+    <p>Перший пошук зазвичай потребує одного запиту адреси й окремого запиту повної
+      геометрії. Геометрія залежить від об’єкта: точка, лінія або полігон.</p>
+    <p>Панель і Locator мають спільний кеш у RAM до 128 МіБ на сесію плагіна.
+      Повтори адрес і геометрії використовують кеш; позначка «З кешу сесії» показує це.
+      Регістр і зайві пробіли не створюють нового пошуку. Після витіснення старого запису
+      новий запит можливий.</p>
+    <p>Закриття панелі та зміна проєкту зберігають кеш. Зміна провайдера або ключа
+      та вивантаження плагіна його очищають. Помилки не кешуються.</p>
+    <p>Завантажені шари — тимчасові, EPSG:4326, окремо для точок, ліній і полігонів;
+      вони містять ID, назву, адресу, категорію й атрибуцію. За потреби збережіть їх
+      засобами QGIS перед закриттям проєкту.</p>
+  </section>
+  <section id="access">
+    <h2>Доступ і квоти</h2>
+    <h3>Спільний доступ Railway</h3>
+    <p>Інсталяція реєструється автоматично при першому запиті, без введення API-ключа
+      чи токена. Добовий залишок надходить із сервера та враховує спільний ліміт.
+      Наявний персональний доступ зберігається. Може знадобитися головний пароль QGIS
+      для розблокування Authentication Manager.</p>
+    <h3>Власний ключ Visicom API</h3>
+    <p>Запити йдуть безпосередньо до Visicom. Ключ зберігається в QGIS Authentication Manager.
+      Добова квота для локальної оцінки — типово 1500; значення можна змінити.</p>
+    <p class="note">Локальна оцінка враховує лише цей плагін на комп’ютері, спільно для
+      його профілів QGIS3/QGIS4. Використання ключа іншими програмами або комп’ютерами
+      невідоме. Перевищення попереджає, але не блокує запити; Visicom застосовує власні межі.</p>
+    <p>Якщо показ залишку вимкнений, видно кількість запитів. У локальному обліку
+      рахуються фактичні спроби відправлення, включно з помилками та геометрією.
+      Кешовані повтори квоту не витрачають. Межа доби — Europe/Kyiv.</p>
+  </section>
+  <section id="trouble">
+    <h2>Якщо не працює</h2>
+    <ul>
+      <li>Перевірте режим доступу, інтернет і повідомлення над чекбоксом геометрії.</li>
+      <li>Для власного ключа перевірте його в налаштуваннях. Для відкликаного спільного
+        доступу зверніться до адміністратора сервера.</li>
+      <li>При перевищенні хвилинного ліміту зачекайте. Добова квота оновлюється після
+        початку нової доби; автоматичних повторів запитів немає.</li>
+      <li>Найближча адреса — це об’єкт у радіусі 50 м, а не обов’язково адреса саме
+        тієї будівлі, по якій зроблено клік.</li>
+      <li>Після оновлення файлів плагіна перезапустіть QGIS.</li>
+    </ul>
+  </section>
+  <section id="license">
+    <h2>Ліцензія й дані</h2>
+    <p>Власний код UA Address Search ліцензується за MIT. Текст ліцензії — у файлі
+      LICENSE встановленого плагіна. Дані надає Visicom та відповідні правовласники;
+      умови API, тарифів і атрибуції діють окремо від ліцензії коду.</p>
+    <p>Зовнішні посилання відкриваються лише за вашим натисканням:
+      <a href="https://api.visicom.ua/uk/products/data-api">Visicom Data API</a> ·
+      <a href="https://github.com/suprunidze/ua_address_search">Репозиторій плагіна</a>.</p>
+  </section>
+  <footer>UA Address Search · 0.1.0.6 · Українська офлайн-довідка</footer>
+</main>
+</body>
+</html>

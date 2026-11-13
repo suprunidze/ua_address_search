@@ -1,5 +1,6 @@
 import configparser
 import hashlib
+from html.parser import HTMLParser
 from pathlib import Path
 import unittest
 import xml.etree.ElementTree as ET
@@ -9,6 +10,21 @@ ROOT = Path(__file__).resolve().parents[2]
 
 
 class ReleaseTests(unittest.TestCase):
+    def test_offline_help_is_bundled_utf8_and_has_no_automatic_external_resources(self):
+        class Resources(HTMLParser):
+            def handle_starttag(self, tag, attributes):
+                if tag in ("script", "link", "img", "iframe", "object"):
+                    raise AssertionError("Help must not load external resources")
+
+        with zipfile.ZipFile(ROOT / "dist/ua_address_search.zip") as archive:
+            content = archive.read("ua_address_search/resources/help.html")
+            self.assertEqual(content, (ROOT / "ua_address_search/resources/help.html").read_bytes())
+            html = content.decode("utf-8")
+            self.assertIn('lang="uk"', html)
+            self.assertIn("Найближча адреса", html)
+            self.assertNotIn("url(", html.lower())
+            Resources().feed(html)
+
     def test_archive_is_exact_runtime_and_mit(self):
         from scripts.package_plugin import runtime_files
 

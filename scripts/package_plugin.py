@@ -39,7 +39,7 @@ def runtime_files():
             raise RuntimeError("Symlinks are not allowed in a release")
         if name in excluded or "__pycache__" in path.parts:
             continue
-        if path.name == "LICENSE" or path.suffix in (".py", ".txt", ".svg", ".png", ".qm"):
+        if path.name == "LICENSE" or path.suffix in (".py", ".txt", ".svg", ".png", ".qm", ".html"):
             files.append(path)
     return files
 

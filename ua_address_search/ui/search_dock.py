@@ -1,6 +1,6 @@
 """Compact native dock with automatic geometry and accessible theme actions."""
 
-from qgis.PyQt.QtCore import Qt, pyqtSignal
+from qgis.PyQt.QtCore import Qt, pyqtSignal, QSignalBlocker
 from qgis.PyQt.QtGui import QKeySequence
 
 try:
@@ -28,9 +28,10 @@ class SearchDock(QDockWidget):
     search_requested = pyqtSignal(str)
     selection_requested = pyqtSignal(int)
     download_requested = pyqtSignal(int)
-    reverse_requested = pyqtSignal()
+    reverse_requested = pyqtSignal(bool)
     settings_requested = pyqtSignal()
     cancel_requested = pyqtSignal()
+    help_requested = pyqtSignal()
     geometry_toggled = pyqtSignal(bool)
     quota_changed = pyqtSignal()
 
@@ -42,16 +43,26 @@ class SearchDock(QDockWidget):
         layout.setContentsMargins(6, 6, 6, 6)
         layout.setSpacing(4)
         row = QHBoxLayout()
+        self.search_row = row
+        self.reverse_button = self.button("Найближча адреса за кліком", "mActionIdentify.svg")
+        self.reverse_button.setCheckable(True)
+        row.addWidget(self.reverse_button)
         self.query = QLineEdit()
         self.query.setPlaceholderText("Київ, Хрещатик, 26 • Locator: адр адреса")
         self.query.setAccessibleName("Адреса для пошуку")
         self.search_button = QPushButton("Знайти")
         row.addWidget(self.query)
         row.addWidget(self.search_button)
+        self.cancel_button = self.button("Скасувати", "mTaskCancel.svg")
+        self.cancel_button.setEnabled(False)
+        row.addWidget(self.cancel_button)
         layout.addLayout(row)
         self.results = QListWidget()
         self.results.setAccessibleName("Результати адресного пошуку")
         layout.addWidget(self.results)
+        self.status = QLabel("Введіть адресу та натисніть Enter.")
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
         self.auto_geometry = QCheckBox("Автоматично отримувати геометрію")
         self.auto_geometry.setChecked(True)
         self.auto_geometry.setToolTip(
@@ -60,35 +71,24 @@ class SearchDock(QDockWidget):
         )
         layout.addWidget(self.auto_geometry)
         row = QHBoxLayout()
-
-        def button(title, icon):
-            item = QToolButton()
-            item.setText(title)
-            item.setToolTip(title)
-            item.setAccessibleName(title)
-            item.setIcon(QgsApplication.getThemeIcon("/" + icon))
-            row.addWidget(item)
-            return item
-
-        self.download_button = button("Завантажити геометрію в шар", "mActionFileSave.svg")
-        self.reverse_button = button("Найближча адреса за кліком", "mActionIdentify.svg")
-        self.copy_button = button("Копіювати адресу", "mActionEditCopy.svg")
-        self.cancel_button = button("Скасувати", "mTaskCancel.svg")
+        self.action_row = row
+        self.download_button = self.button("Завантажити геометрію", "downloading_svg.svg", True)
+        self.copy_button = self.button("Копіювати адресу", "mActionEditCopy.svg")
+        row.addWidget(self.download_button)
+        row.addWidget(self.copy_button)
         row.addStretch()
-        self.settings_button = button("Налаштування", "mActionOptions.svg")
+        self.settings_button = self.button("Налаштування", "mActionOptions.svg", True)
+        self.help_button = self.button("Допомога", "mActionHelpContents.svg")
+        row.addWidget(self.settings_button)
+        row.addWidget(self.help_button)
         layout.addLayout(row)
         self.download_button.setEnabled(False)
         self.copy_button.setEnabled(False)
-        self.cancel_button.setEnabled(False)
-        self.status = QLabel("Введіть адресу та натисніть Enter.")
-        self.status.setWordWrap(True)
-        layout.addWidget(self.status)
         self.quota = QLineEdit("Квота: ще немає даних")
         self.quota.setReadOnly(True)
         self.quota.setFrame(False)
         self.quota.setAccessibleName("Використання та залишок квоти")
         layout.addWidget(self.quota)
-        layout.addWidget(QLabel("Дані: Visicom • Код плагіна: MIT"))
         self.setWidget(body)
         self.search_button.clicked.connect(self.submit)
         self.query.returnPressed.connect(self.submit)
@@ -99,9 +99,10 @@ class SearchDock(QDockWidget):
         self.download_button.clicked.connect(
             lambda: self.download_requested.emit(self.results.currentRow())
         )
-        self.reverse_button.clicked.connect(self.reverse_requested.emit)
+        self.reverse_button.toggled.connect(self.reverse_requested.emit)
         self.settings_button.clicked.connect(self.settings_requested.emit)
         self.cancel_button.clicked.connect(self.cancel_requested.emit)
+        self.help_button.clicked.connect(self.help_requested.emit)
         self.auto_geometry.toggled.connect(self.geometry_toggled.emit)
         self.copy_button.clicked.connect(self.copy_address)
         self.copy_action = QAction("Копіювати адресу", self.results)
@@ -115,6 +116,24 @@ class SearchDock(QDockWidget):
         self.results.setContextMenuPolicy(policy.CustomContextMenu)
         self.results.customContextMenuRequested.connect(self.context_menu)
         self.copy_action.setEnabled(False)
+
+    @staticmethod
+    def button(title, icon, show_text=False):
+        item = QToolButton()
+        item.setText(title)
+        item.setToolTip(title)
+        item.setAccessibleName(title)
+        item.setIcon(QgsApplication.getThemeIcon("/" + icon))
+        style = getattr(Qt, "ToolButtonStyle", Qt)
+        item.setToolButtonStyle(
+            style.ToolButtonTextBesideIcon if show_text else style.ToolButtonIconOnly
+        )
+        return item
+
+    def set_reverse_active(self, active):
+        blocker = QSignalBlocker(self.reverse_button)
+        self.reverse_button.setChecked(active)
+        del blocker
 
     def context_menu(self, position):
         item = self.results.itemAt(position)
@@ -146,6 +165,3 @@ class SearchDock(QDockWidget):
             item.setToolTip(f"{record.category}\n{record.attribution}")
         prefix = "Найближча адреса: " if nearest else "Знайдено: "
         self.status.setText(prefix + str(len(records)) if records else "Нічого не знайдено.")
-
-    def busy(self, active):
-        self.cancel_button.setEnabled(active)

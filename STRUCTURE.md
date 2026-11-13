@@ -9,9 +9,10 @@
 - `core/usage.py`: атомарний SQLite-лічильник прямих запитів, спільний для профілів комп’ютера.
 - `core/settings.py`: режими доступу, стан панелі й геометрії, Authentication Manager для секретів.
 - `locator.py`: фільтр `адр`, підготовка облікових даних у GUI-потоці.
-- `map_tools.py`: зворотний пошук, CRS, тимчасові маркери та геометрія.
+- `map_tools.py`: зворотний пошук, CRS, маркери, геометрія та керовані flash-анімації.
 - `ui/search_dock.py`, `ui/settings_dialog.py`: інтерфейс Qt5/Qt6.
-- `resources/icon.svg`: іконка. `metadata.txt`: версія. `LICENSE`: копія MIT.
+- `resources/icon.svg`: іконка; `resources/help.html`: українська офлайн-довідка для браузера.
+  `metadata.txt`: версія. `LICENSE`: копія MIT.
 
 ## Сервер
 - `server/app/main.py`: фабрика FastAPI та маршрути /v1/*, /healthz.

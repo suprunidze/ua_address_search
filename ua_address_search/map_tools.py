@@ -1,7 +1,7 @@
 """WGS84 transforms and temporary map overlays."""
 
 import json
-from qgis.PyQt.QtCore import Qt, pyqtSignal, QVariant
+from qgis.PyQt.QtCore import Qt, pyqtSignal, QVariant, QVariantAnimation
 from qgis.PyQt.QtGui import QColor
 from qgis.core import (
     QgsCoordinateReferenceSystem,
@@ -34,10 +34,19 @@ class ReverseMapTool(QgsMapToolEmitPoint):
 
 
 class MapDisplay:
-    def __init__(self, canvas):
+    def __init__(self, canvas, on_change=None):
         self.canvas = canvas
         self.marker = None
         self.band = None
+        self.flashes = {}
+        self.on_change = on_change
+
+    def has_overlays(self):
+        return self.marker is not None or self.band is not None or bool(self.flashes)
+
+    def changed(self):
+        if self.on_change is not None:
+            self.on_change()
 
     def transform(self, source, target):
         return QgsCoordinateTransform(source, target, QgsProject.instance().transformContext())
@@ -86,17 +95,49 @@ class MapDisplay:
             self.band.setColor(QColor(22, 115, 165, 90))
             self.band.setWidth(3)
             self.band.setToGeometry(geom)
-        self.canvas.flashGeometries([QgsGeometry.fromPointXY(center)])
+        self.flash(QgsGeometry.fromPointXY(center))
         if result.geometry:
-            self.canvas.flashGeometries([geom])
+            self.flash(geom)
         self.canvas.refresh()
+        self.changed()
+
+    def flash(self, geometry):
+        """Keep ownership of every animation and overlay so cancellation is immediate."""
+        band = QgsRubberBand(self.canvas, geometry.type())
+        band.setWidth(2)
+        band.setToGeometry(geometry)
+        animation = QVariantAnimation(self.canvas)
+        animation.setDuration(500)
+        animation.setLoopCount(3)
+        animation.setStartValue(QColor(255, 0, 0, 0))
+        animation.setKeyValueAt(0.2, QColor(255, 0, 0, 255))
+        animation.setEndValue(QColor(255, 0, 0, 0))
+        animation.valueChanged.connect(band.setColor)
+        animation.finished.connect(lambda: self.remove_flash(animation))
+        self.flashes[animation] = band
+        animation.start()
+
+    def remove_flash(self, animation, notify=True):
+        band = self.flashes.pop(animation, None)
+        if band is None:
+            return
+        animation.stop()
+        animation.valueChanged.disconnect()
+        animation.finished.disconnect()
+        self.canvas.scene().removeItem(band)
+        animation.deleteLater()
+        if notify:
+            self.changed()
 
     def clear(self):
+        for animation in list(self.flashes):
+            self.remove_flash(animation, notify=False)
         for item in (self.marker, self.band):
             if item is not None:
                 self.canvas.scene().removeItem(item)
         self.marker = None
         self.band = None
+        self.changed()
 
 
 def download_geometry(result):

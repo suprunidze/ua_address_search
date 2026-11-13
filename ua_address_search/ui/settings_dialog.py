@@ -1,5 +1,6 @@
 """Choose shared access or a privately held, direct Visicom key."""
 
+from qgis.PyQt.QtCore import QEvent
 from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -8,6 +9,7 @@ from qgis.PyQt.QtWidgets import (
     QFormLayout,
     QLabel,
     QLineEdit,
+    QLayout,
     QMessageBox,
     QSpinBox,
     QWidget,
@@ -19,8 +21,11 @@ class SettingsDialog(QDialog):
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle("UA Address Search — налаштування")
-        self.resize(490, 260)
         layout = QFormLayout(self)
+        constraints = getattr(QLayout, "SizeConstraint", QLayout)
+        layout.setSizeConstraint(constraints.SetMinimumSize)
+        wrapping = getattr(QFormLayout, "RowWrapPolicy", QFormLayout)
+        layout.setRowWrapPolicy(wrapping.WrapLongRows)
         self.mode = QComboBox()
         self.mode.addItem("Спільний доступ Railway", "railway")
         self.mode.addItem("Власний ключ Visicom API", "visicom")
@@ -34,6 +39,7 @@ class SettingsDialog(QDialog):
         layout.addRow(self.railway_info)
         self.direct = QWidget()
         form = QFormLayout(self.direct)
+        form.setRowWrapPolicy(wrapping.WrapLongRows)
         form.setContentsMargins(0, 0, 0, 0)
         self.key = QLineEdit()
         echo = getattr(QLineEdit, "EchoMode", QLineEdit)
@@ -70,6 +76,17 @@ class SettingsDialog(QDialog):
         direct = self.mode.currentData() == "visicom"
         self.direct.setVisible(direct)
         self.railway_info.setVisible(not direct)
+        self.layout().invalidate()
+        self.layout().activate()
+        self.adjustSize()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        kinds = getattr(QEvent, "Type", QEvent)
+        if event.type() in (kinds.FontChange, kinds.StyleChange) and self.layout() is not None:
+            self.layout().invalidate()
+            self.layout().activate()
+            self.adjustSize()
 
     def save(self):
         try:
