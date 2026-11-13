@@ -34,6 +34,7 @@ class SearchDock(QDockWidget):
     help_requested = pyqtSignal()
     geometry_toggled = pyqtSignal(bool)
     quota_changed = pyqtSignal()
+    access_error = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__("UA Address Search", parent)

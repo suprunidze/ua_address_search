@@ -22,6 +22,10 @@ class ReleaseTests(unittest.TestCase):
             html = content.decode("utf-8")
             self.assertIn('lang="uk"', html)
             self.assertIn("Найближча адреса", html)
+            self.assertIn("register_form&amp;lang=uk", html)
+            self.assertIn("не блокує запити", html)
+            for internal in ("SQLite", "/v1/", "SHA-256", "Bearer", "резервування"):
+                self.assertNotIn(internal, html)
             self.assertNotIn("url(", html.lower())
             Resources().feed(html)
 

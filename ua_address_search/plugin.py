@@ -3,7 +3,7 @@
 from pathlib import Path
 from dataclasses import replace
 from qgis.PyQt import sip
-from qgis.PyQt.QtCore import Qt, QUrl
+from qgis.PyQt.QtCore import Qt, QUrl, QDate
 from qgis.PyQt.QtGui import QIcon, QDesktopServices
 
 try:
@@ -11,7 +11,7 @@ try:
 except ImportError:
     from qgis.PyQt.QtWidgets import QAction
 from qgis.core import QgsApplication, QgsCsException
-from .core.client import RequestTask
+from .core.client import NetworkClient, RequestTask
 from .core.cache import SessionCache
 from .core.models import SearchResult
 from .core.settings import Credentials, Settings
@@ -19,6 +19,7 @@ from .locator import AddressLocatorFilter
 from .map_tools import MapDisplay, ReverseMapTool, download_geometry
 from .ui.search_dock import SearchDock
 from .ui.settings_dialog import SettingsDialog
+from .ui.quota_dialog import QuotaDialog
 
 
 class AddressSearchPlugin:
@@ -37,6 +38,8 @@ class AddressSearchPlugin:
         self.generations = {"search": 0, "feature": 0}
         self.active = False
         self.cache = SessionCache()
+        self.quota_dialog = None
+        self.quota_notices = set()
 
     def initGui(self):
         if self.active:
@@ -49,6 +52,8 @@ class AddressSearchPlugin:
         self.dock.geometry_toggled.connect(self.geometry_toggled)
         self.dock.quota_changed.connect(self.update_quota)
         self.cache.on_quota = self.dock.quota_changed.emit
+        self.dock.access_error.connect(self.access_error)
+        self.cache.on_error = self.dock.access_error.emit
         right = getattr(Qt, "RightDockWidgetArea", None)
         if right is None:
             right = Qt.DockWidgetArea.RightDockWidgetArea
@@ -132,14 +137,43 @@ class AddressSearchPlugin:
             self.locator.credentials = credentials
         return credentials
 
-    def configure(self):
+    def configure(self, mode=None):
         self.cancel_tasks()
-        dialog = SettingsDialog(self.settings, self.iface.mainWindow())
+        dialog = SettingsDialog(self.settings, self.iface.mainWindow(), initial_mode=mode)
         run = getattr(dialog, "exec", None) or dialog.exec_
         if run():
             self.refresh_credentials()
             self.select(self.dock.results.currentRow())
         dialog.deleteLater()
+
+    def access_error(self, notice):
+        feedback = notice["feedback"]
+        if (
+            not self.active
+            or self.cache.closed
+            or notice["identity"] != self.cache.identity
+            or notice["code"] != "daily_quota"
+            or self.settings.mode() != "railway"
+            or sip.isdeleted(feedback)
+            or feedback.isCanceled()
+        ):
+            return
+        day = notice.get("day")
+        if not isinstance(day, str) or not QDate.fromString(day, "yyyy-MM-dd").isValid():
+            day = NetworkClient.kyiv_day()
+        identity = (notice["identity"], day)
+        if identity in self.quota_notices:
+            return
+        self.quota_notices.add(identity)
+        if self.quota_dialog is None:
+            self.quota_dialog = QuotaDialog(self.iface.mainWindow())
+            self.quota_dialog.settings_requested.connect(self.configure_own_key)
+        self.quota_dialog.show()
+        self.quota_dialog.raise_()
+
+    def configure_own_key(self):
+        self.quota_dialog.close()
+        self.configure(mode="visicom")
 
     def search(self, text):
         if len(text.strip()) < 3:
@@ -231,11 +265,18 @@ class AddressSearchPlugin:
                 self.dock.status.setText(f"Доступно запитів сьогодні: {remaining} (Europe/Kyiv).")
             elif operation == "feature":
                 if task.result and task.result[0].geometry:
-                    if self.show_record(task.result[0], cached=False):
+                    if self.show_record(
+                        task.result[0], cached=False, recenter=not task.download_requested
+                    ):
                         self.dock.status.setText(self.result_status + " • Геометрію показано.")
                         if task.download_requested:
                             try:
-                                layer, added = download_geometry(task.result[0])
+                                bridge = (
+                                    self.iface.layerTreeCanvasBridge()
+                                    if hasattr(self.iface, "layerTreeCanvasBridge")
+                                    else None
+                                )
+                                layer, added = download_geometry(task.result[0], bridge)
                                 self.dock.status.setText(
                                     "Геометрію додано до шару: " + layer.name()
                                     if added
@@ -278,7 +319,7 @@ class AddressSearchPlugin:
                 else:
                     self.start("feature", record.id)
 
-    def show_record(self, record, cached=True):
+    def show_record(self, record, cached=True, recenter=True):
         try:
             if cached and self.dock.auto_geometry.isChecked() and self.cache.identity is not None:
                 found, records = self.cache.peek(self.cache.identity, "feature", record.id)
@@ -286,7 +327,7 @@ class AddressSearchPlugin:
                     record = SearchResult.from_dict(records[0])
             if cached and not self.dock.auto_geometry.isChecked():
                 record = replace(record, geometry=None)
-            self.display.show(record)
+            self.display.show(record, recenter=recenter)
             return True
         except (QgsCsException, ValueError) as exc:
             self.dock.status.setText("Не вдалося показати об’єкт: " + str(exc))
@@ -405,7 +446,14 @@ class AddressSearchPlugin:
         self.active = False
         self.cancel(silent=True)
         self.cache.on_quota = None
+        self.cache.on_error = None
         self.cache.close()
+        self.quota_notices.clear()
+        if self.quota_dialog is not None:
+            self.quota_dialog.close()
+            self.quota_dialog.settings_requested.disconnect(self.configure_own_key)
+            self.quota_dialog.deleteLater()
+            self.quota_dialog = None
         self.restore_tool()
         self.display.on_change = None
         self.display.clear()

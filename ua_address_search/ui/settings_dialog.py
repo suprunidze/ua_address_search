@@ -17,19 +17,20 @@ from qgis.PyQt.QtWidgets import (
 
 
 class SettingsDialog(QDialog):
-    def __init__(self, settings, parent=None):
+    def __init__(self, settings, parent=None, initial_mode=None):
         super().__init__(parent)
         self.settings = settings
         self.setWindowTitle("UA Address Search — налаштування")
         layout = QFormLayout(self)
         constraints = getattr(QLayout, "SizeConstraint", QLayout)
-        layout.setSizeConstraint(constraints.SetMinimumSize)
+        layout.setSizeConstraint(constraints.SetNoConstraint)
+        self.setSizeGripEnabled(False)
         wrapping = getattr(QFormLayout, "RowWrapPolicy", QFormLayout)
         layout.setRowWrapPolicy(wrapping.WrapLongRows)
         self.mode = QComboBox()
         self.mode.addItem("Спільний доступ Railway", "railway")
         self.mode.addItem("Власний ключ Visicom API", "visicom")
-        self.mode.setCurrentIndex(1 if settings.mode() == "visicom" else 0)
+        self.mode.setCurrentIndex(1 if (initial_mode or settings.mode()) == "visicom" else 0)
         layout.addRow("Режим доступу", self.mode)
         self.railway_info = QLabel(
             "Автоматична реєстрація цієї інсталяції. Добова квота обмежена; "
@@ -76,17 +77,27 @@ class SettingsDialog(QDialog):
         direct = self.mode.currentData() == "visicom"
         self.direct.setVisible(direct)
         self.railway_info.setVisible(not direct)
-        self.layout().invalidate()
-        self.layout().activate()
-        self.adjustSize()
+        self.fit_contents()
+
+    def fit_contents(self):
+        layout = self.layout()
+        self.setMinimumSize(0, 0)
+        self.setMaximumSize(16777215, 16777215)
+        layout.invalidate()
+        layout.activate()
+        width = max(500, layout.minimumSize().width())
+        height = (
+            layout.totalHeightForWidth(width)
+            if layout.hasHeightForWidth()
+            else layout.sizeHint().height()
+        )
+        self.setFixedSize(width, max(height, layout.minimumSize().height()))
 
     def changeEvent(self, event):
         super().changeEvent(event)
         kinds = getattr(QEvent, "Type", QEvent)
         if event.type() in (kinds.FontChange, kinds.StyleChange) and self.layout() is not None:
-            self.layout().invalidate()
-            self.layout().activate()
-            self.adjustSize()
+            self.fit_contents()
 
     def save(self):
         try:

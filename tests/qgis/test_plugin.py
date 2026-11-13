@@ -22,8 +22,9 @@ from qgis.core import (
     QgsSettings,
     QgsProject,
     QgsNetworkAccessManager,
+    QgsRectangle,
 )
-from qgis.gui import QgsMapCanvas, QgsMapToolPan
+from qgis.gui import QgsMapCanvas, QgsMapToolPan, QgsLayerTreeMapCanvasBridge
 from ua_address_search import classFactory
 from ua_address_search.core.client import ClientError, NetworkClient, RequestTask
 from ua_address_search.core.cache import SessionCache
@@ -38,6 +39,7 @@ from ua_address_search.core.settings import (
 from ua_address_search.locator import AddressLocatorFilter
 from ua_address_search.map_tools import MapDisplay, download_geometry
 from ua_address_search.ui.settings_dialog import SettingsDialog
+from ua_address_search.ui.quota_dialog import REGISTRATION_URL
 
 RECORD = SearchResult(
     "ADR_TEST",
@@ -75,12 +77,16 @@ class Iface:
         self.locator = QgsLocator()
         self.actions = []
         self.filters = []
+        self.bridge = None
 
     def mainWindow(self):
         return self.window
 
     def mapCanvas(self):
         return self.canvas
+
+    def layerTreeCanvasBridge(self):
+        return self.bridge
 
     def addDockWidget(self, area, dock):
         self.window.addDockWidget(area, dock)
@@ -119,6 +125,9 @@ class Handler(BaseHTTPRequestHandler):
     sessions = []
     geometry_gate = None
     geometry_started = threading.Event()
+    quota_day = "2026-11-12"
+    error_gate = None
+    error_started = threading.Event()
 
     def log_message(self, *args):
         pass
@@ -137,7 +146,15 @@ class Handler(BaseHTTPRequestHandler):
             time.sleep(0.4)
         code = 200
         if self.path.startswith("/denied/"):
+            gate = type(self).error_gate
+            if gate is not None:
+                type(self).error_started.set()
+                gate.wait(4)
             code, content = 429, {"error": {"code": "daily_quota"}}
+        elif self.path.startswith("/minute/"):
+            code, content = 429, {"error": {"code": "rate_limit"}}
+        elif self.path.startswith("/provider/"):
+            code, content = 429, {"error": {"code": "provider_quota"}}
         elif self.path.startswith("/bad/"):
             content = None
         elif self.path.startswith("/direct/"):
@@ -169,9 +186,11 @@ class Handler(BaseHTTPRequestHandler):
         if isinstance(content, dict) and not self.path.startswith("/direct/"):
             content["quota"] = {
                 "observed_at": time.time_ns(),
-                "remaining": 100 - len(type(self).calls),
+                "remaining": 0
+                if content.get("error", {}).get("code") == "daily_quota"
+                else 100 - len(type(self).calls),
                 "token_daily_limit": 100,
-                "day": "2026-11-12",
+                "day": type(self).quota_day,
             }
         data = json.dumps(content).encode() if content is not None else b"not JSON"
         if self.path.startswith("/redirect/"):
@@ -209,6 +228,9 @@ class QgisTests(unittest.TestCase):
         Handler.sessions.clear()
         Handler.geometry_gate = None
         Handler.geometry_started.clear()
+        Handler.quota_day = "2026-11-12"
+        Handler.error_gate = None
+        Handler.error_started.clear()
         QgsSettings().remove(PREFIX)
         for key in LOCATOR_PREFIX_KEYS:
             QgsSettings().remove(key)
@@ -462,6 +484,10 @@ class QgisTests(unittest.TestCase):
             dialog.show()
             events()
             railway_size = dialog.size()
+            self.assertGreaterEqual(dialog.width(), 500)
+            self.assertEqual(dialog.minimumSize(), dialog.maximumSize())
+            dialog.resize(dialog.width() + 200, dialog.height() + 200)
+            self.assertEqual(dialog.size(), railway_size)
             self.assertTrue(dialog.size().expandedTo(dialog.minimumSize()) == dialog.size())
             dialog.mode.setCurrentIndex(1)
             events()
@@ -475,14 +501,218 @@ class QgisTests(unittest.TestCase):
             for widget in (dialog.mode, dialog.key, dialog.show_quota, dialog.limit):
                 self.assertTrue(widget.isVisible())
                 self.assertGreaterEqual(widget.height(), widget.minimumSizeHint().height())
-            larger = dialog.height()
+            larger = dialog.size()
             dialog.mode.setCurrentIndex(0)
             events()
-            self.assertLess(dialog.height(), larger)
+            self.assertEqual(dialog.minimumSize(), dialog.maximumSize())
+            self.assertGreaterEqual(dialog.width(), 500)
+            self.assertNotEqual(dialog.size(), larger)
+            # Fewer rows can be taller when the layout also becomes narrower.
+            expected = dialog.layout().totalHeightForWidth(dialog.width())
+            self.assertEqual(dialog.height(), max(expected, dialog.layout().minimumSize().height()))
         finally:
             dialog.close()
             dialog.deleteLater()
             events()
+
+    def canvas_view(self):
+        canvas = self.iface.canvas
+        return (
+            QgsRectangle(canvas.extent()).toString(12),
+            canvas.scale(),
+            canvas.mapSettings().destinationCrs().authid(),
+            canvas.rotation(),
+        )
+
+    def test_download_preserves_view_with_real_first_layer_bridge_and_cache(self):
+        project = QgsProject.instance()
+        old_crs = project.crs()
+        project.setCrs(QgsCoordinateReferenceSystem("EPSG:3857"))
+        self.iface.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:3857"))
+        self.iface.bridge = QgsLayerTreeMapCanvasBridge(
+            project.layerTreeRoot(), self.iface.canvas, self.iface.window
+        )
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        self.plugin.dock.auto_geometry.setChecked(False)
+        try:
+            with patch.object(
+                Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
+            ):
+                self.plugin.search("Київ")
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                self.assertFalse(project.mapLayers())
+                self.iface.canvas.setRotation(17)
+                self.iface.canvas.setExtent(QgsRectangle(1e6, 2e6, 1.4e6, 2.3e6))
+                before = self.canvas_view()
+                self.plugin.download_selected(0)
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                events()
+                self.assertEqual(self.canvas_view(), before)
+                self.assertEqual(project.crs().authid(), "EPSG:3857")
+                self.assertTrue(self.iface.bridge.autoSetupOnFirstLayer())
+                self.assertEqual(len(project.mapLayers()), 1)
+                self.assertIsNotNone(self.plugin.display.band)
+                self.iface.canvas.setExtent(QgsRectangle(2e6, 1e6, 2.4e6, 1.3e6))
+                before = self.canvas_view()
+                self.plugin.download_selected(0)
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                events()
+                self.assertEqual(self.canvas_view(), before)
+                self.assertEqual(len(Handler.calls), 2)
+                self.assertEqual(next(iter(project.mapLayers().values())).featureCount(), 1)
+                with patch(
+                    "ua_address_search.plugin.download_geometry",
+                    side_effect=ValueError("test failure"),
+                ):
+                    self.plugin.download_selected(0)
+                    self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                    self.assertEqual(self.canvas_view(), before)
+                self.plugin.select(0)
+                self.assertNotEqual(self.canvas_view(), before)
+        finally:
+            project.setCrs(old_crs)
+
+    def test_download_joins_pending_geometry_and_preserves_user_pan(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        self.plugin.records = [replace(RECORD, id="ADR_HOLD")]
+        self.plugin.dock.show_results(self.plugin.records)
+        Handler.geometry_gate = threading.Event()
+        with patch.object(
+            Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
+        ):
+            try:
+                self.plugin.dock.results.setCurrentRow(0)
+                self.assertTrue(wait_until(Handler.geometry_started.is_set))
+                self.iface.canvas.setExtent(QgsRectangle(1e6, 2e6, 1.4e6, 2.3e6))
+                before = self.canvas_view()
+                self.plugin.download_selected(0)
+                self.assertEqual(len(self.plugin.tasks), 1)
+            finally:
+                Handler.geometry_gate.set()
+            self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+            self.assertEqual(self.canvas_view(), before)
+            self.assertEqual(len(Handler.calls), 1)
+            self.assertEqual(len(QgsProject.instance().mapLayers()), 1)
+
+    def test_quota_dialog_once_per_day_all_panel_routes_and_registration_link(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        credentials = Credentials(self.url + "/denied", "synthetic-token")
+        with patch.object(Settings, "credentials", return_value=credentials):
+            with patch(
+                "ua_address_search.ui.quota_dialog.QDesktopServices.openUrl", return_value=True
+            ) as browser:
+                for operation, value in (
+                    ("search", "Київ"),
+                    ("reverse", (30, 50)),
+                    ("feature", RECORD.id),
+                ):
+                    self.plugin.start(operation, value)
+                    self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                    events()
+                    dialog = self.plugin.quota_dialog
+                    self.assertIsNotNone(dialog)
+                    if operation == "search":
+                        self.assertTrue(dialog.isVisible())
+                        self.assertFalse(dialog.isModal())
+                        self.assertNotIn("персональ", dialog.message.text())
+                        self.assertNotIn("загальн", dialog.message.text())
+                        browser.assert_not_called()
+                        dialog.registration.linkActivated.emit(REGISTRATION_URL)
+                        self.assertEqual(browser.call_args[0][0].toString(), REGISTRATION_URL)
+                        with patch.object(self.plugin, "configure") as configure:
+                            dialog.settings_button.click()
+                            configure.assert_called_once_with(mode="visicom")
+                    else:
+                        self.assertFalse(dialog.isVisible())
+                    self.assertEqual(len(self.plugin.quota_notices), 1)
+                Handler.quota_day = "2026-11-13"
+                self.plugin.search("Київ")
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                self.assertTrue(self.plugin.quota_dialog.isVisible())
+                self.assertEqual(len(self.plugin.quota_notices), 2)
+
+    def test_quota_dialog_from_real_locator_and_no_notice_for_other_errors(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        with patch.object(
+            Settings,
+            "credentials",
+            return_value=Credentials(self.url + "/denied", "synthetic-token"),
+        ):
+            self.iface.locator.fetchResults("адр Київ", QgsLocatorContext())
+            self.assertTrue(wait_until(lambda: self.plugin.quota_dialog is not None))
+        self.plugin.quota_dialog.close()
+        notices = len(self.plugin.quota_notices)
+        for path in ("/minute", "/provider"):
+            with patch.object(
+                Settings,
+                "credentials",
+                return_value=Credentials(self.url + path, "synthetic-token"),
+            ):
+                self.plugin.search("Київ")
+                self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+                self.assertFalse(self.plugin.quota_dialog.isVisible())
+                self.assertEqual(len(self.plugin.quota_notices), notices)
+
+    def test_cancelled_stale_and_direct_errors_do_not_open_quota_dialog(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        Handler.error_gate = threading.Event()
+        with patch.object(
+            Settings,
+            "credentials",
+            return_value=Credentials(self.url + "/denied", "synthetic-token"),
+        ):
+            try:
+                self.plugin.search("Київ")
+                self.assertTrue(wait_until(Handler.error_started.is_set))
+                self.plugin.cancel()
+            finally:
+                Handler.error_gate.set()
+            self.assertTrue(
+                wait_until(lambda: QgsApplication.taskManager().countActiveTasks() == 0)
+            )
+            self.assertIsNone(self.plugin.quota_dialog)
+        feedback = QgsFeedback()
+        notice = {
+            "identity": self.plugin.cache.identity,
+            "code": "daily_quota",
+            "day": "2026-11-12",
+            "feedback": feedback,
+        }
+        feedback.cancel()
+        self.plugin.access_error(notice)
+        self.assertIsNone(self.plugin.quota_dialog)
+        notice["feedback"] = QgsFeedback()
+        notice["identity"] = ("stale", "identity")
+        self.plugin.access_error(notice)
+        self.assertIsNone(self.plugin.quota_dialog)
+        notice["identity"] = self.plugin.cache.identity
+        with patch.object(Settings, "mode", return_value="visicom"):
+            self.plugin.access_error(notice)
+            self.assertIsNone(self.plugin.quota_dialog)
+        self.plugin.unload()
+        self.plugin.access_error(notice)
+        self.assertIsNone(self.plugin.quota_dialog)
+
+    def test_settings_open_own_key_without_saving_access_mode(self):
+        settings = Settings()
+        self.assertEqual(settings.mode(), "railway")
+        dialog = SettingsDialog(settings, self.iface.window, initial_mode="visicom")
+        try:
+            self.assertEqual(dialog.mode.currentData(), "visicom")
+            self.assertEqual(settings.mode(), "railway")
+            self.assertEqual(dialog.key.text(), "")
+            self.assertGreaterEqual(dialog.width(), 500)
+            self.assertEqual(dialog.minimumSize(), dialog.maximumSize())
+        finally:
+            dialog.reject()
+            dialog.deleteLater()
+            events()
+        self.assertEqual(settings.mode(), "railway")
 
     def test_encrypted_settings_and_url_validation(self):
         manager = QgsApplication.authManager()

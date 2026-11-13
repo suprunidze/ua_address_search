@@ -44,6 +44,7 @@ class SessionCache:
         self.stats = {"network": 0, "cache": 0, "shared": 0}
         self.quota = None
         self.on_quota = None
+        self.on_error = None
 
     def set_identity(self, identity):
         with self.lock:
@@ -76,6 +77,18 @@ class SessionCache:
                 self.quota = dict(quota)
                 if self.on_quota is not None:
                     self.on_quota()
+
+    def notify_error(self, identity, code, quota, feedback):
+        with self.lock:
+            if not self.closed and self.identity == identity and self.on_error is not None:
+                self.on_error(
+                    {
+                        "identity": identity,
+                        "code": code,
+                        "day": quota.get("day"),
+                        "feedback": feedback,
+                    }
+                )
 
     @staticmethod
     def key(identity, operation, value):

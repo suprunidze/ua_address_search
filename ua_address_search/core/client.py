@@ -42,7 +42,10 @@ MESSAGES = {
 
 
 class ClientError(Exception):
-    pass
+    def __init__(self, message, code="", quota=None):
+        super().__init__(message)
+        self.code = code
+        self.quota = dict(quota) if isinstance(quota, dict) else {}
 
 
 class NetworkClient:
@@ -73,6 +76,10 @@ class NetworkClient:
             )
         except CacheCancelled:
             raise ClientError("Запит скасовано.") from None
+        except ClientError as exc:
+            if credentials.mode == "railway" and exc.code == "daily_quota":
+                self.cache.notify_error(credentials.identity, exc.code, exc.quota, feedback)
+            raise
         if self.last_source != "network":
             if credentials.mode == "visicom":
                 self.update_quota(credentials, self._local_quota(credentials, False))
@@ -190,13 +197,17 @@ class NetworkClient:
             raise ClientError("Visicom повернув некоректні результати.") from None
 
     @staticmethod
-    def _local_quota(credentials, increment):
+    def kyiv_day():
         zone = QTimeZone(b"Europe/Kyiv")
         if not zone.isValid():
             zone = QTimeZone(b"Europe/Kiev")
         if not zone.isValid():
             raise ClientError("Часовий пояс Europe/Kyiv недоступний.")
-        day = QDateTime.currentDateTimeUtc().toTimeZone(zone).date().toString("yyyy-MM-dd")
+        return QDateTime.currentDateTimeUtc().toTimeZone(zone).date().toString("yyyy-MM-dd")
+
+    @staticmethod
+    def _local_quota(credentials, increment):
+        day = NetworkClient.kyiv_day()
         try:
             return LocalUsage(credentials.usage_path).record(
                 credentials.token, day, credentials.quota_limit, increment
@@ -253,7 +264,11 @@ class NetworkClient:
                 raise ClientError(MESSAGES[code].replace("Серверний ключ", "Ключ"))
             error_data = payload.get("error", {}) if isinstance(payload, dict) else {}
             code = error_data.get("code", "") if isinstance(error_data, dict) else ""
-            raise ClientError(MESSAGES.get(code, f"Помилка сервера HTTP {status}."))
+            raise ClientError(
+                MESSAGES.get(code, f"Помилка сервера HTTP {status}."),
+                code=code,
+                quota=payload.get("quota") if isinstance(payload, dict) else None,
+            )
         no_error = getattr(QNetworkReply, "NoError", None)
         if no_error is None:
             no_error = QNetworkReply.NetworkError.NoError

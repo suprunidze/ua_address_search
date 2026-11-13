@@ -56,7 +56,7 @@ class MapDisplay:
         result = self.transform(crs, QgsCoordinateReferenceSystem("EPSG:4326")).transform(map_point)
         return result.x(), result.y()
 
-    def show(self, result):
+    def show(self, result, recenter=True):
         self.clear()
         transform = self.transform(
             QgsCoordinateReferenceSystem("EPSG:4326"), self.canvas.mapSettings().destinationCrs()
@@ -78,9 +78,10 @@ class MapDisplay:
                 min(180, x + 0.001),
                 min(90, y + 0.001),
             )
-        extent = transform.transformBoundingBox(QgsRectangle(*box))
-        extent.scale(1.3)
-        self.canvas.setExtent(extent)
+        if recenter:
+            extent = transform.transformBoundingBox(QgsRectangle(*box))
+            extent.scale(1.3)
+            self.canvas.setExtent(extent)
         if result.geometry:
             feature = {"type": "Feature", "properties": {}, "geometry": result.geometry}
             # QgsJsonUtils is available throughout QGIS 3.28–4.x.
@@ -140,7 +141,7 @@ class MapDisplay:
         self.changed()
 
 
-def download_geometry(result):
+def download_geometry(result, bridge=None):
     """Add one cached result to a plugin-owned memory layer, without duplicate IDs."""
     if not result.geometry:
         raise ValueError("Об’єкт не має геометрії для завантаження.")
@@ -174,7 +175,8 @@ def download_geometry(result):
         ),
         None,
     )
-    if layer is None:
+    new_layer = layer is None
+    if new_layer:
         names = {"Point": "точки", "Line": "лінії", "Polygon": "полігони"}
         layer = QgsVectorLayer(
             type_name + "?crs=EPSG:4326", "UA Address Search — " + names[family], "memory"
@@ -187,7 +189,6 @@ def download_geometry(result):
             ]
         )
         layer.updateFields()
-        project.addMapLayer(layer)
     index = layer.fields().indexFromName("visicom_id")
     if any(feature[index] == result.id for feature in layer.getFeatures()):
         return layer, False
@@ -202,5 +203,17 @@ def download_geometry(result):
     if not success:
         raise ValueError("Не вдалося додати об’єкт до тимчасового шару.")
     layer.updateExtents()
+    if new_layer:
+        if bridge is None:
+            project.addMapLayer(layer)
+        else:
+            auto_setup = bridge.autoSetupOnFirstLayer()
+            try:
+                bridge.setAutoSetupOnFirstLayer(False)
+                project.addMapLayer(layer)
+                # Consume the deferred first-layer update before restoring its policy.
+                bridge.setCanvasLayers()
+            finally:
+                bridge.setAutoSetupOnFirstLayer(auto_setup)
     layer.triggerRepaint()
     return layer, True

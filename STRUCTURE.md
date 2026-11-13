@@ -11,6 +11,7 @@
 - `locator.py`: фільтр `адр`, підготовка облікових даних у GUI-потоці.
 - `map_tools.py`: зворотний пошук, CRS, маркери, геометрія та керовані flash-анімації.
 - `ui/search_dock.py`, `ui/settings_dialog.py`: інтерфейс Qt5/Qt6.
+- `ui/quota_dialog.py`: немодальне повідомлення добової квоти та реєстрація ключа Visicom.
 - `resources/icon.svg`: іконка; `resources/help.html`: українська офлайн-довідка для браузера.
   `metadata.txt`: версія. `LICENSE`: копія MIT.
 
