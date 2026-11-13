@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from dataclasses import replace
+from qgis.PyQt import sip
 from qgis.PyQt.QtCore import Qt
 from qgis.PyQt.QtGui import QIcon
 
@@ -313,13 +314,22 @@ class AddressSearchPlugin:
         self.dock.status.setText("Клацніть на карті: найближча адреса в радіусі 50 м.")
 
     def restore_tool(self):
-        canvas = self.iface.mapCanvas()
-        if self.tool is not None and canvas.mapTool() == self.tool:
-            if self.previous_tool is not None:
-                canvas.setMapTool(self.previous_tool)
-            else:
-                canvas.unsetMapTool(self.tool)
+        previous_tool = self.previous_tool
         self.previous_tool = None
+        canvas = self.iface.mapCanvas()
+        if self.tool is None or canvas.mapTool() != self.tool:
+            return
+        if previous_tool is None or sip.isdeleted(previous_tool):
+            canvas.unsetMapTool(self.tool)
+            return
+        try:
+            canvas.setMapTool(previous_tool)
+        except RuntimeError:
+            # Another tool can delete the previous one during map-tool signals.
+            if not sip.isdeleted(previous_tool):
+                raise
+            if canvas.mapTool() == self.tool:
+                canvas.unsetMapTool(self.tool)
 
     def reverse_at(self, map_point):
         try:

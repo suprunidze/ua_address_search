@@ -8,6 +8,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
+from qgis.PyQt import sip
 from qgis.PyQt.QtCore import QCoreApplication, QEvent
 from qgis.PyQt.QtWidgets import QApplication, QMainWindow
 from qgis.core import (
@@ -21,7 +22,7 @@ from qgis.core import (
     QgsProject,
     QgsNetworkAccessManager,
 )
-from qgis.gui import QgsMapCanvas
+from qgis.gui import QgsMapCanvas, QgsMapToolPan
 from ua_address_search import classFactory
 from ua_address_search.core.client import ClientError, NetworkClient, RequestTask
 from ua_address_search.core.cache import SessionCache
@@ -234,6 +235,96 @@ class QgisTests(unittest.TestCase):
             self.assertEqual(self.iface.actions, [])
             self.assertEqual(self.iface.filters, [])
             self.assertEqual(self.plugin.tasks, set())
+
+    def test_reverse_after_previous_map_tool_deleted(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        self.iface.canvas.setDestinationCrs(QgsCoordinateReferenceSystem("EPSG:4326"))
+        previous = QgsMapToolPan(self.iface.canvas)
+        self.iface.canvas.setMapTool(previous)
+        self.plugin.activate_reverse()
+        self.plugin.activate_reverse()
+        self.assertIs(self.plugin.previous_tool, previous)
+        sip.delete(previous)
+        self.assertTrue(sip.isdeleted(previous))
+        with patch.object(
+            Settings, "credentials", return_value=Credentials(self.url, "synthetic-token")
+        ):
+            self.plugin.reverse_at(QgsPointXY(30.5234, 50.4501))
+            self.assertTrue(wait_until(lambda: not self.plugin.tasks))
+        self.assertIsNone(self.plugin.previous_tool)
+        self.assertNotEqual(self.iface.canvas.mapTool(), self.plugin.tool)
+        self.assertEqual(sum(path == "/v1/reverse" for path, _, _ in Handler.calls), 1)
+        self.assertIsNotNone(self.plugin.display.marker)
+
+    def test_deleted_previous_tool_cancel_hide_and_unload(self):
+        self.plugin = classFactory(self.iface)
+        for action in ("cancel", "hide", "unload"):
+            with self.subTest(action=action):
+                self.plugin.initGui()
+                previous = QgsMapToolPan(self.iface.canvas)
+                self.iface.canvas.setMapTool(previous)
+                self.plugin.activate_reverse()
+                active_tool = self.plugin.tool
+                sip.delete(previous)
+                if action == "hide":
+                    self.plugin.visibility_changed(False)
+                else:
+                    getattr(self.plugin, action)()
+                self.assertIsNone(self.plugin.previous_tool)
+                self.assertNotEqual(self.iface.canvas.mapTool(), active_tool)
+        self.plugin.initGui()
+        self.plugin.activate_reverse()
+        self.plugin.cancel()
+        self.assertEqual(len(self.iface.filters), 1)
+        self.assertIsNone(self.plugin.previous_tool)
+
+    def test_restore_preserves_live_tool_or_user_selection(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        previous = QgsMapToolPan(self.iface.canvas)
+        self.iface.canvas.setMapTool(previous)
+        self.plugin.activate_reverse()
+        self.plugin.restore_tool()
+        self.assertIs(self.iface.canvas.mapTool(), previous)
+        self.assertIsNone(self.plugin.previous_tool)
+        self.plugin.activate_reverse()
+        selected = QgsMapToolPan(self.iface.canvas)
+        self.iface.canvas.setMapTool(selected)
+        sip.delete(previous)
+        self.plugin.restore_tool()
+        self.assertIs(self.iface.canvas.mapTool(), selected)
+        self.assertIsNone(self.plugin.previous_tool)
+        self.iface.canvas.unsetMapTool(selected)
+        self.plugin.activate_reverse()
+        self.plugin.restore_tool()
+        self.assertIsNone(self.iface.canvas.mapTool())
+
+    def test_restore_handles_deletion_during_switch_and_propagates_other_errors(self):
+        self.plugin = classFactory(self.iface)
+        self.plugin.initGui()
+        previous = QgsMapToolPan(self.iface.canvas)
+        self.iface.canvas.setMapTool(previous)
+        self.plugin.activate_reverse()
+
+        def delete_on_restore(tool):
+            sip.delete(tool)
+            raise RuntimeError("deleted during switch")
+
+        with patch.object(self.iface.canvas, "setMapTool", delete_on_restore):
+            self.plugin.restore_tool()
+        self.assertIsNone(self.iface.canvas.mapTool())
+        self.assertIsNone(self.plugin.previous_tool)
+        previous = QgsMapToolPan(self.iface.canvas)
+        self.iface.canvas.setMapTool(previous)
+        self.plugin.activate_reverse()
+        with patch.object(
+            self.iface.canvas, "setMapTool", side_effect=RuntimeError("unexpected restore failure")
+        ):
+            with self.assertRaisesRegex(RuntimeError, "unexpected restore failure"):
+                self.plugin.restore_tool()
+        self.assertIsNone(self.plugin.previous_tool)
+        self.assertFalse(sip.isdeleted(previous))
 
     def test_encrypted_settings_and_url_validation(self):
         manager = QgsApplication.authManager()
